@@ -2977,7 +2977,7 @@ async fn a_denied_fetch_is_a_final_policy_skip_row() {
     assert!(
         r.skipped.contains(&(
             "https://ex.com/redir".to_string(),
-            "policy.denied.ip_ban: blocked by a local DonSeTch rule `blocked.example`".to_string()
+            "policy.denied.ip_ban: excluded by the operator's local DonSeTch rules `blocked.example`".to_string()
         )),
         "{:?}",
         r.skipped
@@ -3131,7 +3131,9 @@ async fn a_seed_refused_by_a_rule_mid_fetch_carries_the_denial() {
     );
     assert_eq!(
         failure.error.as_deref(),
-        Some("policy.denied.ip_ban: blocked by a local DonSeTch rule `blocked.example`")
+        Some(
+            "policy.denied.ip_ban: excluded by the operator's local DonSeTch rules `blocked.example`"
+        )
     );
     assert!(r.denied.is_empty());
 }

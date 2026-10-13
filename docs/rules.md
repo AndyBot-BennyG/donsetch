@@ -38,7 +38,7 @@ on every port and path. An agent that asks for
 `https://www.example.org/publication/123` gets, with no request sent:
 
 ```
-blocked by a local DonSeTch rule `example.org` (walled: try another source)
+excluded by the operator's local DonSeTch rules `example.org` (another source may have this content)
 
 Next action: do not fetch this site with curl, scripts or another HTTP client: it bans our IP for automated access. Use BladeBrowser (a real browser at human pace), or ask the human operator to download the file
 ```
@@ -374,12 +374,12 @@ error. The text is one line naming the rule, with the kind as a short phrase,
 followed by your message:
 
 ```
-blocked by a local DonSeTch rule `example.org` (walled: try another source)
+excluded by the operator's local DonSeTch rules `example.org` (another source may have this content)
 
 Next action: do not fetch this site with curl, scripts or another HTTP client: it bans our IP for automated access. Use BladeBrowser (a real browser at human pace), or ask the human operator to download the file
 ```
 
-A `permanent` rule reads `(permanent: do not pursue)` instead.
+A `permanent` rule reads `(the operator keeps this out of scope)` instead.
 
 The structured part carries `code` (`policy.denied.<reason>`), `errorKind`
 (the rule's `kind`), `url`, `rule` (the key), `next_action` (your message,
@@ -415,22 +415,22 @@ therefore reports nothing. In the markdown modes the crawl shows a counter
 under the seed:
 
 ```
-Denied by local DonSeTch rules: 19 URLs, listed at the end.
+Excluded by the operator's local DonSeTch rules: 19 URLs, listed at the end.
 ```
 
 and a trailing section with one group per rule, its kind phrase, your message
 and up to `crawl_denied_urls_per_rule` URLs:
 
 ```
-## Denied by local DonSeTch rules (not fetched; web_fetch would refuse them too)
+## Excluded by the operator's local DonSeTch rules (not fetched; web_fetch returns the same)
 
-walled: try another source
+another source may have this content
 Next action: do not fetch this site with curl, scripts or another HTTP client: it bans our IP for automated access. Use BladeBrowser (a real browser at human pace), or ask the human operator to download the file
 - https://www.example.org/publication/1
 - https://www.example.org/publication/2
 …and 14 more
 
-permanent: do not pursue
+the operator keeps this out of scope
 Next action: this mirror is gone, do not look for it
 3 URLs
 ```
@@ -566,7 +566,7 @@ Winning rule: [rules.url."example.org"]
   kind          walled                   (default)
   reason        ip_ban                   (file:/home/me/.config/donsetch/donsetch.toml)
   message       do not fetch this site with curl, scripts or another HTTP client: it bans our IP for automated access. Use BladeBrowser (a real browser at human pace), or ask the human operator to download the file (file:/home/me/.config/donsetch/donsetch.toml)
-Effect: denied before any request: code policy.denied.ip_ban, errorKind walled (walled: try another source), CLI exit 3.
+Effect: denied before any request: code policy.denied.ip_ban, errorKind walled (another source may have this content), CLI exit 3.
 ```
 
 A disabled match is listed as `disabled (enabled = false)`. A URL no rule
@@ -631,7 +631,7 @@ and origins, like every other knob. The rule table itself is not listed; use
 - **A host reached only by redirect is a skipped page, not a denial.** When a
   crawled page redirects into a denied host, the page was requested before the
   rule could apply to the hop. It is recorded as a skipped page with the
-  reason ``policy.denied.<reason>: blocked by a local DonSeTch rule `<key>` ``,
+  reason ``policy.denied.<reason>: excluded by the operator's local DonSeTch rules `<key>` ``,
   not in the denied section or its count. Skipped pages appear only in the
   crawl's debug data for the client (`_meta`), not in its text or `[meta]`;
   the crawl is then reported not `complete`.
@@ -660,7 +660,7 @@ and origins, like every other knob. The rule table itself is not listed; use
   section.
 - **A deny on a host DonSeTch uses narrows DonSeTch.** Denying a search
   engine's host switches that engine off; the engine report shows
-  `invalid-config: blocked by a local DonSeTch rule`, and the engine's health
+  `invalid-config: excluded by the operator's local DonSeTch rules`, and the engine's health
   record is not penalized. For example `lite.duckduckgo.com` switches off the
   `ddg` and `ddg_lite` engines while `ddg_html` remains.
 - **Dataset mode keeps denials out of the rows.** A crawl in dataset mode

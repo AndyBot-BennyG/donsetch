@@ -700,7 +700,7 @@ mod tests {
     fn exit_code_follows_a_policy_denial_kind() {
         let denial = |kind: &str| {
             json!({
-                "content": [{"type": "text", "text": "blocked by a local DonSeTch rule `banned.example` (walled: try another source)"}],
+                "content": [{"type": "text", "text": "excluded by the operator's local DonSeTch rules `banned.example` (another source may have this content)"}],
                 "isError": true,
                 "errorKind": kind,
                 "structuredContent": {

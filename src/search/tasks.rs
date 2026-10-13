@@ -307,7 +307,7 @@ fn vertical_success(vertical: String, hits: Vec<engines::Hit>, ms: u64) -> (Stri
 
 /// The engine-report status for a SERP or vertical request a local rule
 /// refused; in the `invalid-config:` family, so not an engine fault.
-const RULE_DENIED_STATUS: &str = "invalid-config: blocked by a local DonSeTch rule";
+const RULE_DENIED_STATUS: &str = "invalid-config: excluded by the operator's local DonSeTch rules";
 
 /// The engine-report status for a failed vertical fetch: a rule refusal
 /// gets [`RULE_DENIED_STATUS`], anything else its error text.
@@ -329,7 +329,7 @@ fn ghost_failure_status(error: &str) -> &'static str {
     // CDP request guard and arrives as "navigate failed: Chrome network
     // error": it still reads as "ghost-render", an engine fault, until
     // the hook's error is typed.
-    if error.contains("blocked by a local DonSeTch rule") {
+    if error.contains("excluded by the operator's local DonSeTch rules") {
         RULE_DENIED_STATUS
     } else if error.contains("captcha") {
         "blocked:captcha"
@@ -409,7 +409,8 @@ mod tests {
 
     #[test]
     fn a_browser_render_refused_by_a_rule_is_not_an_engine_fault() {
-        let status = ghost_failure_status("render: blocked by a local DonSeTch rule");
+        let status =
+            ghost_failure_status("render: excluded by the operator's local DonSeTch rules");
         assert_eq!(status, RULE_DENIED_STATUS);
         assert!(!super::super::is_engine_fault(status));
         // Negative: render failures and captchas keep their statuses.

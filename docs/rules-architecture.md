@@ -96,7 +96,7 @@ skips a host whose winning rule pins tier `"1"` (`rules_keep_browser_off`).
 - **Self-contained variant.** `Denied` carries the rule's payload instead of
   a key to look up, so formatting never depends on the process-global
   ruleset, and a unit test can build and assert one.
-- **`Display` prints fixed text only**: `blocked by a local DonSeTch rule`,
+- **`Display` prints fixed text only**: `excluded by the operator's local DonSeTch rules`,
   with neither the key nor the message. A stringified error feeds text
   heuristics (`error_code`'s substring classifier, `lane_note`), and
   operator text there would misfire: a message mentioning "timeout" coded

@@ -61,10 +61,10 @@ pub struct FetchedPage {
 }
 
 /// The skip reason a crawl records for a page a local rule refused:
-/// `<policy code>: blocked by a local DonSeTch rule `<key>``.
+/// `<policy code>: excluded by the operator's local DonSeTch rules `<key>``.
 pub(crate) fn policy_skip_reason(d: &crate::rules::Denial) -> String {
     format!(
-        "{}: blocked by a local DonSeTch rule `{}`",
+        "{}: excluded by the operator's local DonSeTch rules `{}`",
         d.code(),
         d.rule
     )

@@ -443,7 +443,9 @@ mod tests {
         assert_eq!(denial.reason.as_deref(), Some("local_only"));
         assert_eq!(
             page.error_hint.as_deref(),
-            Some("policy.denied.local_only: blocked by a local DonSeTch rule `127.0.0.1`"),
+            Some(
+                "policy.denied.local_only: excluded by the operator's local DonSeTch rules `127.0.0.1`"
+            ),
             "never labelled a network failure"
         );
     }

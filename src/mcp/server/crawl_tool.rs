@@ -523,7 +523,7 @@ pub(super) fn render_crawl_result(
     // it survives a client that truncates a long response.
     if !result.denied.is_empty() {
         text.push_str(&format!(
-            "Denied by local DonSeTch rules: {}, listed at the end.\n\n",
+            "Excluded by the operator's local DonSeTch rules: {}, listed at the end.\n\n",
             url_count(result.denied.total())
         ));
     }
@@ -755,12 +755,12 @@ fn url_count(n: usize) -> String {
     }
 }
 
-/// The trailing "Denied by local DonSeTch rules" section: one group per
+/// The trailing "Excluded by the operator's local DonSeTch rules" section: one group per
 /// rule with its kind phrase, the operator's message as `Next action:`
 /// and the group's capped URLs. The rule key never appears in it.
 fn denied_section(denied: &crate::crawl::DeniedLog) -> String {
     let mut out = String::from(
-        "## Denied by local DonSeTch rules (not fetched; web_fetch would refuse them too)\n",
+        "## Excluded by the operator's local DonSeTch rules (not fetched; web_fetch returns the same)\n",
     );
     for group in &denied.groups {
         out.push('\n');
@@ -1228,19 +1228,19 @@ mod crawl_output_contract_tests {
         let out = render_crawl_result(&result, CrawlMode::Full, false);
         let text = out["content"][0]["text"].as_str().unwrap();
         let counter = text
-            .find("Denied by local DonSeTch rules: 19 URLs, listed at the end.")
+            .find("Excluded by the operator's local DonSeTch rules: 19 URLs, listed at the end.")
             .expect(text);
         let first_page = text.find("## [1]").unwrap();
         let section = text
             .find(
-                "## Denied by local DonSeTch rules (not fetched; web_fetch would refuse them too)",
+                "## Excluded by the operator's local DonSeTch rules (not fetched; web_fetch returns the same)",
             )
             .expect(text);
         assert!(counter < first_page && first_page < section, "{text}");
         let tail = &text[section..];
         assert!(
             tail.contains(
-                "walled: try another source\nNext action: use BladeBrowser for this site\n- https://www.banned.example/publication/1\n- https://www.banned.example/publication/2\n…and 14 more"
+                "another source may have this content\nNext action: use BladeBrowser for this site\n- https://www.banned.example/publication/1\n- https://www.banned.example/publication/2\n…and 14 more"
             ),
             "{tail}"
         );
@@ -1248,7 +1248,7 @@ mod crawl_output_contract_tests {
         // still shows its kind, message and count.
         assert!(
             tail.contains(
-                "permanent: do not pursue\nNext action: this mirror is gone, do not look for it\n3 URLs"
+                "the operator keeps this out of scope\nNext action: this mirror is gone, do not look for it\n3 URLs"
             ),
             "{tail}"
         );
@@ -1313,7 +1313,7 @@ mod crawl_output_contract_tests {
         // The operator's key holds "duplicate", the row is still a refusal.
         result.skipped = vec![(
             "https://example.com/docs/moved".into(),
-            "policy.denied.unspecified: blocked by a local DonSeTch rule `duplicate-finder.example`"
+            "policy.denied.unspecified: excluded by the operator's local DonSeTch rules `duplicate-finder.example`"
                 .into(),
         )];
         assert_eq!(complete(&result), false);
@@ -1328,12 +1328,12 @@ mod crawl_output_contract_tests {
         result.skipped = vec![
             (
                 "https://a.example/x".into(),
-                "policy.denied.unspecified: blocked by a local DonSeTch rule `wallpaper.example`"
+                "policy.denied.unspecified: excluded by the operator's local DonSeTch rules `wallpaper.example`"
                     .into(),
             ),
             (
                 "https://b.example/y".into(),
-                "policy.denied.ip_ban: blocked by a local DonSeTch rule `404news.example`".into(),
+                "policy.denied.ip_ban: excluded by the operator's local DonSeTch rules `404news.example`".into(),
             ),
         ];
         let hint = super::compute_crawl_next_action(&result);

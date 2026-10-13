@@ -75,7 +75,7 @@ pub(super) fn friendly_fetch_error(e: &FetchError) -> String {
         // denials do not come through here (`policy_error_value` builds
         // its own text and puts the message in next_action).
         FetchError::Denied { rule, message, .. } => {
-            format!("blocked by a local DonSeTch rule `{rule}`: {message}")
+            format!("excluded by the operator's local DonSeTch rules `{rule}`: {message}")
         }
         FetchError::NonHttpRedirect(_) => format!("HTTP protocol error: {e}"),
     }
@@ -446,7 +446,7 @@ pub(super) fn tool_error_structured(
 /// The one place a local rule's denial becomes a tool result.
 ///
 /// For `FetchError::Denied` the text is
-/// ``blocked by a local DonSeTch rule `<rule>` (<kind phrase>)``, the
+/// ``excluded by the operator's local DonSeTch rules `<rule>` (<kind phrase>)``, the
 /// rule's `kind` is the `errorKind` (top level and in
 /// `structuredContent`), and `structuredContent` carries `code`
 /// (`policy.denied.<reason>`), `url`, `rule` and the operator's
@@ -492,7 +492,7 @@ pub(super) fn policy_error_value(e: &FetchError, url: &str, escalation: Option<V
     }
     tool_error_structured(
         format!(
-            "blocked by a local DonSeTch rule `{rule}` ({})",
+            "excluded by the operator's local DonSeTch rules `{rule}` ({})",
             crate::rules::kind_phrase(kind)
         ),
         kind,
@@ -1451,7 +1451,7 @@ mod policy_tests {
         assert_eq!(
             text,
             format!(
-                "blocked by a local DonSeTch rule `banned.example` (walled: try another source)\n\nNext action: {MESSAGE}"
+                "excluded by the operator's local DonSeTch rules `banned.example` (another source may have this content)\n\nNext action: {MESSAGE}"
             )
         );
     }
@@ -1476,7 +1476,7 @@ mod policy_tests {
         assert_eq!(s["escalation"], trace);
         assert_eq!(s["next_action"], "do not fetch this host");
         assert!(v["content"][0]["text"].as_str().unwrap().starts_with(
-            "blocked by a local DonSeTch rule `intranet.example` (permanent: do not pursue)"
+            "excluded by the operator's local DonSeTch rules `intranet.example` (the operator keeps this out of scope)"
         ));
     }
 
@@ -1526,7 +1526,7 @@ mod policy_tests {
         assert!(!transport_failure_evidence(&e));
         assert_eq!(
             friendly_fetch_error(&e),
-            format!("blocked by a local DonSeTch rule `banned.example`: {MESSAGE}")
+            format!("excluded by the operator's local DonSeTch rules `banned.example`: {MESSAGE}")
         );
         // The non-web-scheme redirect keeps the Http-era classification.
         let r = FetchError::NonHttpRedirect("ftp".into());
@@ -1550,7 +1550,7 @@ mod policy_tests {
             format!("browser navigation error: {shown}"),
             format!("web_screenshot: page failed to render: {shown}"),
             format!(
-                "fetch: all 2 urls failed\n{shown}\n\nNext action: private/loopback targets are blocked by design\nblocked by a local DonSeTch rule `dns.lookup.example` (walled: try another source)"
+                "fetch: all 2 urls failed\n{shown}\n\nNext action: private/loopback targets are blocked by design\nexcluded by the operator's local DonSeTch rules `dns.lookup.example` (another source may have this content)"
             ),
         ] {
             assert_eq!(

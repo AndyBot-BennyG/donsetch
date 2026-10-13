@@ -73,7 +73,7 @@ impl fmt::Display for FetchError {
             // network failure or a dead proxy lane. The surfaces that
             // need the key and the message read the variant's fields.
             // Do not add them here.
-            Self::Denied { .. } => write!(f, "blocked by a local DonSeTch rule"),
+            Self::Denied { .. } => write!(f, "excluded by the operator's local DonSeTch rules"),
             Self::NonHttpRedirect(scheme) => {
                 write!(f, "blocked redirect to non-http(s) scheme: {scheme}")
             }
@@ -103,7 +103,7 @@ mod tests {
             url: "https://connect.widgets.example/captcha".into(),
         };
         let shown = e.to_string();
-        assert_eq!(shown, "blocked by a local DonSeTch rule");
+        assert_eq!(shown, "excluded by the operator's local DonSeTch rules");
         assert!(!shown.contains("facebook") && !shown.contains("captcha"));
         assert!(!shown.contains("ip_ban"));
     }

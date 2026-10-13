@@ -95,8 +95,8 @@ pub enum DenyKind {
     Permanent,
 }
 
-const WALLED_PHRASE: &str = "walled: try another source";
-const PERMANENT_PHRASE: &str = "permanent: do not pursue";
+const WALLED_PHRASE: &str = "another source may have this content";
+const PERMANENT_PHRASE: &str = "the operator keeps this out of scope";
 
 impl DenyKind {
     /// The config and `errorKind` spelling: `"walled"` or `"permanent"`.
@@ -1373,11 +1373,26 @@ mod tests {
 
     #[test]
     fn kind_phrases() {
-        assert_eq!(DenyKind::Walled.phrase(), "walled: try another source");
-        assert_eq!(DenyKind::Permanent.phrase(), "permanent: do not pursue");
-        assert_eq!(kind_phrase("permanent"), "permanent: do not pursue");
-        assert_eq!(kind_phrase("walled"), "walled: try another source");
-        assert_eq!(kind_phrase("anything"), "walled: try another source");
+        assert_eq!(
+            DenyKind::Walled.phrase(),
+            "another source may have this content"
+        );
+        assert_eq!(
+            DenyKind::Permanent.phrase(),
+            "the operator keeps this out of scope"
+        );
+        assert_eq!(
+            kind_phrase("permanent"),
+            "the operator keeps this out of scope"
+        );
+        assert_eq!(
+            kind_phrase("walled"),
+            "another source may have this content"
+        );
+        assert_eq!(
+            kind_phrase("anything"),
+            "another source may have this content"
+        );
         assert_eq!(RulesMode::Off.as_str(), "off");
         assert_eq!(RuleTier::One.as_str(), "1");
         assert_eq!(RuleTier::Auto.as_str(), "auto");
