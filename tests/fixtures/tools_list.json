@@ -6,7 +6,7 @@
         "additionalProperties": false,
         "properties": {
           "actions": {
-            "description": "Ordered page interactions before reading (1-16 objects). Each object requires do. Required fields: wait uses ms; wait_selector uses selector; wait_text uses text; click/hover uses selector or text; type uses text and optional selector; press uses key; scroll uses to or px. The first failed step stops and is reported.",
+            "description": "Any action routes the fetch through the browser tier; omit for static reads. Ordered page interactions before reading (1-16 objects). Each object requires do. Required fields: wait uses ms; wait_selector uses selector; wait_text uses text; click/hover uses selector or text; type uses text and optional selector; press uses key; scroll uses to or px. The first failed step stops and is reported.",
             "items": {
               "additionalProperties": false,
               "properties": {
