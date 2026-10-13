@@ -9,12 +9,12 @@ fn load_and_install_config(args: &[String]) -> &'static config::DonsetchConfig {
     let mut loaded = match config::load() {
         Ok(loaded) => {
             for w in &loaded.warnings {
-                eprintln!("[donsetch config] {w}");
+                donsetch::diag!("[donsetch config] {w}");
             }
             loaded
         }
         Err(e) => {
-            eprintln!("donsetch: {e}");
+            donsetch::diag!("donsetch: {e}");
             std::process::exit(1);
         }
     };
@@ -29,13 +29,13 @@ fn load_and_install_config(args: &[String]) -> &'static config::DonsetchConfig {
         match p.parse::<u16>() {
             Ok(port) if port != 0 => c.transport.port = port,
             _ => {
-                eprintln!("donsetch: invalid --port {p:?}");
+                donsetch::diag!("donsetch: invalid --port {p:?}");
                 std::process::exit(1);
             }
         }
     }
     if let Err(e) = config::install_loaded(loaded) {
-        eprintln!("donsetch: {e}");
+        donsetch::diag!("donsetch: {e}");
         std::process::exit(1);
     }
     config::cfg()
@@ -51,7 +51,7 @@ fn config_cli(args: &[String]) {
     match config::load() {
         Ok(loaded) => {
             for w in &loaded.warnings {
-                eprintln!("[donsetch config] {w}");
+                donsetch::diag!("[donsetch config] {w}");
             }
             if rest.iter().any(|a| a == "--markdown") {
                 println!("{}", config::show_markdown());
@@ -60,7 +60,7 @@ fn config_cli(args: &[String]) {
             }
         }
         Err(e) => {
-            eprintln!("donsetch: {e}");
+            donsetch::diag!("donsetch: {e}");
             std::process::exit(1);
         }
     }
@@ -89,7 +89,7 @@ fn main() {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("donsetch: cannot start the async runtime: {e}");
+            donsetch::diag!("donsetch: cannot start the async runtime: {e}");
             std::process::exit(1);
         }
     };
@@ -168,7 +168,7 @@ async fn run() {
             config_cli(&args);
         }
         "mcp" => {
-            eprintln!(
+            donsetch::diag!(
                 "[mcp] donsetch {} · {}",
                 env!("CARGO_PKG_VERSION"),
                 std::env::current_exe()
@@ -185,9 +185,9 @@ async fn run() {
             if config::cfg().transport.kind == config::TransportKind::Http {
                 let host = config::cfg().transport.host.clone();
                 let port = config::cfg().transport.port;
-                eprintln!("[mcp] starting HTTP server on {}:{}", host, port);
+                donsetch::diag!("[mcp] starting HTTP server on {}:{}", host, port);
                 if let Err(e) = mcp::http::run(host, port).await {
-                    eprintln!("mcp HTTP server: {e}");
+                    donsetch::diag!("mcp HTTP server: {e}");
                     std::process::exit(1);
                 }
                 return;
@@ -198,7 +198,7 @@ async fn run() {
             // and macOS-x64 prebuilt binaries are core-only.)
             #[cfg(not(feature = "http"))]
             if config::cfg().transport.kind == config::TransportKind::Http {
-                eprintln!(
+                donsetch::diag!(
                     "mcp: HTTP transport requested (--http / transport.kind = http), but this \
                      binary was built without the `http` cargo feature. Rebuild with \
                      --features http, or use a prebuilt binary that includes it."
@@ -212,13 +212,13 @@ async fn run() {
                 // the whole MCP session) restarts the child instead.
                 // Persistent state (handles, history, profiles) reloads
                 // from disk; the client sees a blip, not a death.
-                eprintln!("[supervisor] donsetch mcp --supervised");
+                donsetch::diag!("[supervisor] donsetch mcp --supervised");
                 if let Err(e) = mcp::supervisor::run() {
-                    eprintln!("[supervisor] {e}");
+                    donsetch::diag!("[supervisor] {e}");
                     std::process::exit(1);
                 }
             } else if let Err(e) = mcp::server::run().await {
-                eprintln!("mcp daemon: {e}");
+                donsetch::diag!("mcp daemon: {e}");
                 std::process::exit(1);
             }
         }
@@ -253,7 +253,7 @@ async fn run() {
             }
         }
         _ => {
-            eprintln!("donsetch: unknown command '{cmd}'\n");
+            donsetch::diag!("donsetch: unknown command '{cmd}'\n");
             cli::tool::print_top_help();
             std::process::exit(1);
         }

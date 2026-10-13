@@ -397,7 +397,7 @@ impl ByokSearcher {
                         // empty, fall back to local search.
                         last_error = format!("{provider}: empty results");
                         if crate::config::cfg().debug.search {
-                            eprintln!("[byok] {provider} returned 0 results, trying next");
+                            crate::diag!("[byok] {provider} returned 0 results, trying next");
                         }
                         walk.push(EngineReport {
                             engine: provider.clone(),
@@ -443,7 +443,7 @@ impl ByokSearcher {
                     let shown = &failure.detail;
                     // Log the error for debugging.
                     if crate::config::cfg().debug.search {
-                        eprintln!(
+                        crate::diag!(
                             "[byok] {provider} key={}... {shown}",
                             key.chars().take(8).collect::<String>(),
                         );

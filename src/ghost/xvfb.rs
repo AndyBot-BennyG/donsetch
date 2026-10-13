@@ -237,7 +237,7 @@ mod linux {
             }
 
             if crate::config::cfg().debug.ghost {
-                eprintln!("[ghost] Xvfb started on {display}");
+                crate::diag!("[ghost] Xvfb started on {display}");
             }
             Ok(Self {
                 reaper: Some(spawn_reaper(child)),

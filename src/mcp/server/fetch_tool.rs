@@ -2741,7 +2741,7 @@ pub(super) async fn ghost_escalate(
             host,
             &page.html,
         );
-        eprintln!(
+        crate::diag!(
             "[ghost_escalate] dom={}B dumped to {}",
             page.html.len(),
             p.display()

@@ -220,7 +220,7 @@ async fn serve_socks5_client(
             Ok(())
         }
         Err(e) => {
-            eprintln!(
+            crate::diag!(
                 "[relay] upstream dial failed for {host}:{port} through {}: {e}",
                 proxy.host
             );

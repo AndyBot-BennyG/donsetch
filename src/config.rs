@@ -2707,12 +2707,12 @@ fn installed() -> &'static Loaded {
     CONFIG.get_or_init(|| match load() {
         Ok(loaded) => {
             for w in &loaded.warnings {
-                eprintln!("[donsetch config] {w}");
+                crate::diag!("[donsetch config] {w}");
             }
             loaded
         }
         Err(e) => {
-            eprintln!("[donsetch config] {e}; using defaults");
+            crate::diag!("[donsetch config] {e}; using defaults");
             Loaded {
                 config: DonsetchConfig::default(),
                 warnings: Vec::new(),

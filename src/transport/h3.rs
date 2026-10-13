@@ -211,7 +211,7 @@ async fn h3_fetch_inner(
     let resumed = crate::transport::routes::load_h3_session(authority, egress);
     if let Some(bytes) = &resumed {
         if crate::config::cfg().debug.ghost {
-            eprintln!("[h3] session resume armed ({} bytes)", bytes.len());
+            crate::diag!("[h3] session resume armed ({} bytes)", bytes.len());
         }
         cfg.enable_early_data();
     }
@@ -450,11 +450,11 @@ async fn h3_fetch_inner(
             let _ = conn.close(true, 0, b"");
             if let Some(sess) = conn.session() {
                 if crate::config::cfg().debug.ghost {
-                    eprintln!("[h3] session saved {} bytes", sess.len());
+                    crate::diag!("[h3] session saved {} bytes", sess.len());
                 }
                 crate::transport::routes::save_h3_session(authority, egress, sess);
             } else if crate::config::cfg().debug.ghost {
-                eprintln!("[h3] no session ticket before close");
+                crate::diag!("[h3] no session ticket before close");
             }
             QUIC_TOTAL_CONN.fetch_add(1, Ordering::Relaxed);
             return Ok((
@@ -528,7 +528,7 @@ pub async fn h3_fetch_direct(
     profile: &crate::profile::BrowserProfile,
 ) -> Result<(H3Out, QuicStats), FetchError> {
     if crate::config::cfg().debug.ghost {
-        eprintln!("[h3] attempt {host}:{port}{path}");
+        crate::diag!("[h3] attempt {host}:{port}{path}");
     }
     let timeout = timeout.unwrap_or(Duration::from_secs(15));
     let accept = user_headers
@@ -558,7 +558,7 @@ pub async fn h3_fetch_direct(
     };
     let (out, stats) = h3_fetch_heat(&req, profile).await?;
     if crate::config::cfg().debug.ghost {
-        eprintln!(
+        crate::diag!(
             "[h3] stats {}:{} early={} resumed={} hs_ms={} total_ms={} pkts_in={} pkts_out={}",
             host,
             port,

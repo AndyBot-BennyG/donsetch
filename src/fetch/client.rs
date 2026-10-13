@@ -519,7 +519,7 @@ impl Fetcher {
                         // The server's validator cannot authorize this cached body.
                         // Recover on the same route with one unconditional GET.
                         // Clearing the snapshot makes a second 304 a protocol error.
-                        eprintln!("[fetch] rejected conditional response: {reason}; refetching");
+                        crate::diag!("[fetch] rejected conditional response: {reason}; refetching");
                         conditional.clear();
                         validation = None;
                         continue;

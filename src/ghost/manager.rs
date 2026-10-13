@@ -324,13 +324,13 @@ impl GhostManager {
         // process and args.
         if super::cloak::headless_mode_requested() {
             if crate::config::cfg().debug.ghost {
-                eprintln!("[ghost] headless backend selected, skipping Xvfb");
+                crate::diag!("[ghost] headless backend selected, skipping Xvfb");
             }
             return None;
         }
         if is_termux {
             if crate::config::cfg().debug.ghost {
-                eprintln!("[ghost] Termux detected, using headless mode (no Xvfb)");
+                crate::diag!("[ghost] Termux detected, using headless mode (no Xvfb)");
             }
             return None;
         }
@@ -345,7 +345,7 @@ impl GhostManager {
                 }
                 // The display died mid-session: retire it, then fall
                 // through to a fresh start below.
-                eprintln!("[ghost] Xvfb {disp} is gone; restarting the display");
+                crate::diag!("[ghost] Xvfb {disp} is gone; restarting the display");
                 self.retire_display().await;
             }
             None => {}
@@ -356,7 +356,7 @@ impl GhostManager {
             // the life of this process; macOS/Windows never see this
             // hint (issue #81).
             if let Some(hint) = xvfb_missing_hint() {
-                eprintln!("{hint}");
+                crate::diag!("{hint}");
             }
             *self.display.lock().await = Some(None);
             return None;
@@ -369,9 +369,9 @@ impl GhostManager {
                     // pre-existing X server is not ours, and saying
                     // "started" for it was wrong (#258).
                     if xvfb.is_borrowed() {
-                        eprintln!("[ghost] Xvfb reused on {disp} (already running)");
+                        crate::diag!("[ghost] Xvfb reused on {disp} (already running)");
                     } else {
-                        eprintln!("[ghost] Xvfb started on {disp}");
+                        crate::diag!("[ghost] Xvfb started on {disp}");
                     }
                 }
                 *self.xvfb.lock().await = Some(xvfb);
@@ -380,9 +380,9 @@ impl GhostManager {
             }
             Err(e) => {
                 if cfg!(target_os = "linux") {
-                    eprintln!("[ghost] Xvfb start failed: {e}, falling back to headless mode");
+                    crate::diag!("[ghost] Xvfb start failed: {e}, falling back to headless mode");
                 } else {
-                    eprintln!(
+                    crate::diag!(
                         "[ghost] Xvfb start failed: {e}, falling back to headful off-screen mode"
                     );
                 }
@@ -491,7 +491,7 @@ impl GhostManager {
         // with the Accept-Language tier-1 already sent.
         if guard.wire.as_ref().is_some_and(|w| *w != wire) {
             if crate::config::cfg().debug.ghost {
-                eprintln!("[pool] wire mismatch on warm slot, relaunching");
+                crate::diag!("[pool] wire mismatch on warm slot, relaunching");
             }
             if let Some(mut old) = guard.ghost.take() {
                 old.kill().await;
@@ -511,7 +511,7 @@ impl GhostManager {
         };
         if need_launch {
             if crate::config::cfg().debug.ghost {
-                eprintln!("[pool] launch slot {} (thaw fail or empty)", idx);
+                crate::diag!("[pool] launch slot {} (thaw fail or empty)", idx);
             }
             if let Some(mut old) = guard.ghost.take() {
                 old.kill().await;
@@ -533,7 +533,7 @@ impl GhostManager {
             }
         } else {
             if crate::config::cfg().debug.ghost {
-                eprintln!("[pool] warm serve slot {}", idx);
+                crate::diag!("[pool] warm serve slot {}", idx);
             }
             // Warm slot served the job: pool receipt. The kill switch
             // does not silence the counter: a single slot may warm-reuse.
@@ -584,7 +584,7 @@ impl GhostManager {
                 let wire = guard.guard.wire.clone().expect("acquired browser wire");
                 let host = guard.guard.host.clone();
                 if crate::config::cfg().debug.ghost {
-                    eprintln!("[browser-read] replacing browser after {reason}: {error}");
+                    crate::diag!("[browser-read] replacing browser after {reason}: {error}");
                 }
                 // A timed-out live link is retired too: re-acquiring its slot
                 // must not return the same generation with late replies in flight.
@@ -687,7 +687,7 @@ impl GhostManager {
                 if g.is_frozen() {
                     if idle > REAP_AFTER {
                         if crate::config::cfg().debug.ghost {
-                            eprintln!("[pool] reap slot {}", idx);
+                            crate::diag!("[pool] reap slot {}", idx);
                         }
                         if let Some(mut dead) = guard.ghost.take() {
                             dead.kill().await;
@@ -1052,14 +1052,14 @@ mod pool_tests {
         });
         let mgr = GhostManager::new().await;
         let profile = BrowserProfile::chrome(151, crate::profile::Platform::Linux, false);
-        eprintln!("[owned-doc] acquiring {:?}", test_started.elapsed());
+        crate::diag!("[owned-doc] acquiring {:?}", test_started.elapsed());
         let mut g = mgr.acquire_for(&profile, Some("127.0.0.1")).await.unwrap();
-        eprintln!("[owned-doc] A navigation {:?}", test_started.elapsed());
+        crate::diag!("[owned-doc] A navigation {:?}", test_started.elapsed());
         g.navigate(&format!("{base}/a")).await.unwrap();
         let a = g.document();
         assert_eq!(a.status, Some(200));
         let started = Instant::now();
-        eprintln!("[owned-doc] B navigation {:?}", test_started.elapsed());
+        crate::diag!("[owned-doc] B navigation {:?}", test_started.elapsed());
         g.navigate(&format!("{base}/b")).await.unwrap();
         assert!(
             started.elapsed() >= Duration::from_millis(800),
@@ -1072,13 +1072,13 @@ mod pool_tests {
         assert_eq!(b.status, Some(201));
         let html = g.outer_html().await.unwrap();
         assert!(html.contains("New document B") && !html.contains("Old document A"));
-        eprintln!("[owned-doc] B navigation {:?}", test_started.elapsed());
+        crate::diag!("[owned-doc] B navigation {:?}", test_started.elapsed());
         g.navigate(&format!("{base}/b")).await.unwrap();
         let reloaded = g.document();
         assert!(reloaded.generation > b.generation);
         assert_ne!(reloaded.loader, b.loader);
         assert_eq!(reloaded.status, Some(201));
-        eprintln!("[owned-doc] SPA render {:?}", test_started.elapsed());
+        crate::diag!("[owned-doc] SPA render {:?}", test_started.elapsed());
         let page =
             super::super::ops::ghost_fetch(&mut g, &format!("{base}/spa"), Duration::from_secs(8))
                 .await
@@ -1104,9 +1104,9 @@ mod pool_tests {
                 timeout_ms: 2000,
             },
         ];
-        eprintln!("[owned-doc] actions {:?}", test_started.elapsed());
+        crate::diag!("[owned-doc] actions {:?}", test_started.elapsed());
         super::super::actions::run(&mut g, &actions).await.unwrap();
-        eprintln!("[owned-doc] actions done {:?}", test_started.elapsed());
+        crate::diag!("[owned-doc] actions done {:?}", test_started.elapsed());
         let html = g.outer_html().await.unwrap();
         assert!(
             html.contains("<h1>Interacted document</h1>")
@@ -1131,7 +1131,7 @@ mod pool_tests {
             "capture must not minimize a native hidden surface"
         );
         let started = Instant::now();
-        eprintln!("[owned-doc] human {:?}", test_started.elapsed());
+        crate::diag!("[owned-doc] human {:?}", test_started.elapsed());
         let human = super::super::ops::ghost_fetch(
             &mut g,
             &format!("{base}/human"),
@@ -1199,7 +1199,7 @@ mod pool_tests {
             redirected.html.contains("Redirected native document")
                 && !redirected.html.contains("Transient document")
         );
-        eprintln!("[owned-doc] bootstrap {:?}", test_started.elapsed());
+        crate::diag!("[owned-doc] bootstrap {:?}", test_started.elapsed());
         let bootstrap = super::super::ops::ghost_fetch(
             &mut g,
             &format!("{base}/bootstrap"),
@@ -1212,7 +1212,7 @@ mod pool_tests {
             super::super::ops::BrowserOutcome::ManagedChallenge
         );
         assert_eq!(bootstrap.vendor.as_deref(), Some("kasada"));
-        eprintln!("[owned-doc] empty {:?}", test_started.elapsed());
+        crate::diag!("[owned-doc] empty {:?}", test_started.elapsed());
         let empty = super::super::ops::ghost_fetch(
             &mut g,
             &format!("{base}/empty"),
@@ -1240,7 +1240,7 @@ mod pool_tests {
                 .count(),
             2
         );
-        eprintln!("[owned-doc] teardown {:?}", test_started.elapsed());
+        crate::diag!("[owned-doc] teardown {:?}", test_started.elapsed());
         drop(g);
         mgr.shutdown().await;
         server.abort();

@@ -52,7 +52,7 @@ async fn next_incoming<R: AsyncBufRead + Unpin>(reader: &mut R) -> Incoming {
                 // like the old loop did. Non-UTF-8 lines are NOT
                 // this path; they arrive as bytes and fail the
                 // from_utf8 conversion below.
-                eprintln!("[mcp] stdin read failed, shutting down: {e}");
+                crate::diag!("[mcp] stdin read failed, shutting down: {e}");
                 return Incoming::Eof;
             }
         };
@@ -118,15 +118,15 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // dropped while the daemon pretends to serve. Log the
             // real cause and stop : the client is gone.
             if let Err(e) = out.write_all(line.as_bytes()).await {
-                eprintln!("[mcp] stdout write failed, shutting down: {e}");
+                crate::diag!("[mcp] stdout write failed, shutting down: {e}");
                 std::process::exit(1);
             }
             if let Err(e) = out.write_all(b"\n").await {
-                eprintln!("[mcp] stdout write failed, shutting down: {e}");
+                crate::diag!("[mcp] stdout write failed, shutting down: {e}");
                 std::process::exit(1);
             }
             if let Err(e) = out.flush().await {
-                eprintln!("[mcp] stdout flush failed, shutting down: {e}");
+                crate::diag!("[mcp] stdout flush failed, shutting down: {e}");
                 std::process::exit(1);
             }
         }

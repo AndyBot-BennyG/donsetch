@@ -151,9 +151,9 @@ pub async fn run(host: String, port: u16) -> Result<(), Box<dyn std::error::Erro
 
     let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
     if auth_enabled {
-        eprintln!("[mcp] HTTP server listening on http://{host}:{port} (bearer auth enabled)");
+        crate::diag!("[mcp] HTTP server listening on http://{host}:{port} (bearer auth enabled)");
     } else {
-        eprintln!("[mcp] HTTP server listening on http://{host}:{port}");
+        crate::diag!("[mcp] HTTP server listening on http://{host}:{port}");
     }
 
     axum::serve(listener, app)
@@ -161,7 +161,7 @@ pub async fn run(host: String, port: u16) -> Result<(), Box<dyn std::error::Erro
         .await?;
 
     // Drain done; stop the daemon so no orphan browsers survive.
-    eprintln!("[mcp] draining complete, shutting daemon down");
+    crate::diag!("[mcp] draining complete, shutting daemon down");
     daemon.shutdown().await;
     Ok(())
 }
@@ -187,7 +187,7 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
-    eprintln!("[mcp] shutdown signal received; draining in-flight requests");
+    crate::diag!("[mcp] shutdown signal received; draining in-flight requests");
 }
 
 /// Liveness probe for orchestrators and load balancers.
@@ -203,7 +203,7 @@ async fn health_handler() -> impl IntoResponse {
 /// POST arbitrary MCP tool calls (fetch/crawl/search, including the
 /// `actions` browser-automation surface) to this server with no
 /// authentication. Fail closed instead of just warning: a startup
-/// error is impossible to miss, unlike an eprintln! in a background
+/// error is impossible to miss, unlike an crate::diag! in a background
 /// daemon's log.
 fn validate_http_config(cors_enabled: bool, auth_enabled: bool) -> Result<(), String> {
     if cors_enabled && !auth_enabled {

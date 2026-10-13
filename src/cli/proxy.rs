@@ -102,7 +102,7 @@ async fn cmd_pool_toggle(args: &[String], which: &str) {
             return;
         }
         _ => {
-            eprintln!("Usage: donsetch proxy {which} on|off");
+            crate::diag!("Usage: donsetch proxy {which} on|off");
             std::process::exit(1);
         }
     };
@@ -115,7 +115,7 @@ async fn cmd_pool_toggle(args: &[String], which: &str) {
             cli::print_kv("applies", "next donsetch run / MCP server restart");
         }
         Err(e) => {
-            eprintln!("{} {e}", cli::icon_fail());
+            crate::diag!("{} {e}", cli::icon_fail());
             std::process::exit(1);
         }
     }
@@ -134,9 +134,9 @@ async fn cmd_add(args: &[String]) {
     }
 
     if urls.is_empty() {
-        eprintln!("Usage: donsetch proxy add <url> [url...] [--no-check]");
-        eprintln!("  Adds one or more proxies. Validated and probed by default.");
-        eprintln!("  --no-check: skip connectivity probing for speed.");
+        crate::diag!("Usage: donsetch proxy add <url> [url...] [--no-check]");
+        crate::diag!("  Adds one or more proxies. Validated and probed by default.");
+        crate::diag!("  --no-check: skip connectivity probing for speed.");
         std::process::exit(1);
     }
 
@@ -250,7 +250,7 @@ async fn cmd_add(args: &[String]) {
         let mut merged = existing;
         merged.extend(to_save);
         if let Err(e) = proxy::save_config(&merged) {
-            eprintln!("  {} Failed to save config: {e}", cli::red("error:"));
+            crate::diag!("  {} Failed to save config: {e}", cli::red("error:"));
             std::process::exit(1);
         }
     }
@@ -262,8 +262,8 @@ async fn cmd_add(args: &[String]) {
 
 async fn cmd_remove(args: &[String]) {
     if args.is_empty() {
-        eprintln!("Usage: donsetch proxy remove <id> [id...]");
-        eprintln!("  Remove by index (1, 2, ...) from `proxy list` or by host:port / URL.");
+        crate::diag!("Usage: donsetch proxy remove <id> [id...]");
+        crate::diag!("  Remove by index (1, 2, ...) from `proxy list` or by host:port / URL.");
         std::process::exit(1);
     }
 
@@ -322,7 +322,7 @@ async fn cmd_remove(args: &[String]) {
     if removed > 0
         && let Err(e) = proxy::save_config(&proxies)
     {
-        eprintln!("  {} Failed to save config: {e}", cli::red("error:"));
+        crate::diag!("  {} Failed to save config: {e}", cli::red("error:"));
         std::process::exit(1);
     }
 
@@ -464,7 +464,7 @@ async fn cmd_clear() {
     }
 
     if let Err(e) = proxy::save_config(&[]) {
-        eprintln!("  {} Failed to clear config: {e}", cli::red("error:"));
+        crate::diag!("  {} Failed to clear config: {e}", cli::red("error:"));
         std::process::exit(1);
     }
 
@@ -478,8 +478,8 @@ async fn cmd_test(args: &[String]) {
     let url = match args.first() {
         Some(u) => u.as_str(),
         None => {
-            eprintln!("Usage: donsetch proxy test <url>");
-            eprintln!("  Tests a single proxy without adding it to the config.");
+            crate::diag!("Usage: donsetch proxy test <url>");
+            crate::diag!("  Tests a single proxy without adding it to the config.");
             std::process::exit(1);
         }
     };
@@ -536,8 +536,8 @@ async fn cmd_import(args: &[String]) {
     let path = match args.first() {
         Some(p) => p.as_str(),
         None => {
-            eprintln!("Usage: donsetch proxy import <file>");
-            eprintln!("  Imports proxies from a text file (one URL per line, # comments).");
+            crate::diag!("Usage: donsetch proxy import <file>");
+            crate::diag!("  Imports proxies from a text file (one URL per line, # comments).");
             std::process::exit(1);
         }
     };
@@ -548,7 +548,7 @@ async fn cmd_import(args: &[String]) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("  {} Cannot read file: {e}", cli::icon_fail());
+            crate::diag!("  {} Cannot read file: {e}", cli::icon_fail());
             std::process::exit(1);
         }
     };
@@ -579,7 +579,7 @@ async fn cmd_import(args: &[String]) {
     if added > 0
         && let Err(e) = proxy::save_config(&existing)
     {
-        eprintln!("  {} Failed to save config: {e}", cli::red("error:"));
+        crate::diag!("  {} Failed to save config: {e}", cli::red("error:"));
         std::process::exit(1);
     }
 
@@ -634,7 +634,7 @@ async fn cmd_export(args: &[String]) {
                     println!("  {} {} {} exported to {}", cli::icon_pass(), n, word, path);
                 }
                 Err(e) => {
-                    eprintln!("  {} Cannot write file: {e}", cli::icon_fail());
+                    crate::diag!("  {} Cannot write file: {e}", cli::icon_fail());
                     std::process::exit(1);
                 }
             }

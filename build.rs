@@ -22,6 +22,13 @@
 // of the downloaded tarball is verified against a pinned map and is
 // required — builds refuse to download when no pinned hash exists.
 
+// The package lint denies raw stderr prints so a failed diagnostic write
+// can never abort the shipped process (src/diag.rs, #364). A build script
+// cannot reach the library's `diag!`, and it is not that process: its
+// stderr is cargo's own progress channel, and a failed write there fails
+// the build loudly rather than aborting a live session.
+#![allow(clippy::print_stderr)]
+
 use std::env;
 use std::fs;
 use std::io::Read;

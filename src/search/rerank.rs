@@ -141,7 +141,7 @@ mod inner {
     }
 
     fn log_thread_selection(selection: ThreadSelection) {
-        eprintln!("{}", thread_selection_log(selection));
+        crate::diag!("{}", thread_selection_log(selection));
     }
 
     /// Returns the cache directory for reranker model files.
@@ -249,18 +249,18 @@ mod inner {
             #[cfg(test)]
             seed_from_user_cache(&model_path, "model_quantized.onnx", MODEL_SHA256);
             if !model_path.exists() {
-                eprintln!("[rerank] downloading model (23MB, first use only)...");
+                crate::diag!("[rerank] downloading model (23MB, first use only)...");
                 download(MODEL_URL, &model_path, MODEL_SHA256)?;
-                eprintln!("[rerank] model cached.");
+                crate::diag!("[rerank] model cached.");
             }
         }
         if !tok_path.exists() {
             #[cfg(test)]
             seed_from_user_cache(&tok_path, "tokenizer.json", TOKENIZER_SHA256);
             if !tok_path.exists() {
-                eprintln!("[rerank] downloading tokenizer (695KB)...");
+                crate::diag!("[rerank] downloading tokenizer (695KB)...");
                 download(TOKENIZER_URL, &tok_path, TOKENIZER_SHA256)?;
-                eprintln!("[rerank] tokenizer cached.");
+                crate::diag!("[rerank] tokenizer cached.");
             }
         }
         Ok((model_path, tok_path))
@@ -279,14 +279,14 @@ mod inner {
         // If the runtime library is missing or fails to init, return None;
         // reranking falls back to RRF+BM25.
         if let Err(e) = crate::onnx::ensure_loaded() {
-            eprintln!("[rerank] {e}");
+            crate::diag!("[rerank] {e}");
             return None;
         }
 
         let (model_path, tok_path) = match ensure_files() {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("[rerank] init failed: {e}");
+                crate::diag!("[rerank] init failed: {e}");
                 return None;
             }
         };
@@ -299,7 +299,7 @@ mod inner {
         match rx.recv_timeout(std::time::Duration::from_secs(30)) {
             Ok(result) => result,
             Err(_) => {
-                eprintln!(
+                crate::diag!(
                     "[rerank] ONNX Runtime init timed out (30s) : \
                      reranking disabled, falling back to RRF+BM25"
                 );
@@ -316,7 +316,7 @@ mod inner {
         let mut tokenizer = match Tokenizer::from_file(&tok_path) {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("[rerank] tokenizer load failed: {e}");
+                crate::diag!("[rerank] tokenizer load failed: {e}");
                 return None;
             }
         };
@@ -345,7 +345,7 @@ mod inner {
                             b
                         }
                         Err(e) => {
-                            eprintln!(
+                            crate::diag!(
                                 "[rerank] failed to set ONNX thread limit: {e}; using ONNX default"
                             );
                             e.recover()
@@ -357,13 +357,13 @@ mod inner {
                 match b.commit_from_file(&model_path) {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("[rerank] session load failed: {e}");
+                        crate::diag!("[rerank] session load failed: {e}");
                         return None;
                     }
                 }
             }
             Err(e) => {
-                eprintln!("[rerank] session builder failed: {e}");
+                crate::diag!("[rerank] session builder failed: {e}");
                 return None;
             }
         };
@@ -442,7 +442,7 @@ mod inner {
         let encodings = match tokenizer.encode_batch(pairs_ref, true) {
             Ok(e) => e,
             Err(e) => {
-                eprintln!("[rerank] tokenization failed: {e}");
+                crate::diag!("[rerank] tokenization failed: {e}");
                 return None;
             }
         };

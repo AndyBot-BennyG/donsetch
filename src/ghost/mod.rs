@@ -1045,12 +1045,12 @@ impl Ghost {
                             unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
                         if got == 0 {
                             if crate::config::cfg().debug.ghost {
-                                eprintln!("[ghost] profile lock acquired: shared profile");
+                                crate::diag!("[ghost] profile lock acquired: shared profile");
                             }
                             (profile_dir(), None, None::<std::path::PathBuf>)
                         } else {
                             if crate::config::cfg().debug.ghost {
-                                eprintln!("[ghost] profile lock contended: temp profile");
+                                crate::diag!("[ghost] profile lock contended: temp profile");
                             }
                             let t = temporary_profile_dir();
                             (t.clone(), Some(t), None::<std::path::PathBuf>)
@@ -1195,7 +1195,7 @@ impl Ghost {
         // or AppArmor restrictions). Never enabled by default :
         // requires explicit env var and prints a loud warning.
         if crate::config::cfg().browser.no_sandbox {
-            eprintln!(
+            crate::diag!(
                 "[ghost] WARNING: DONGHOST_NO_SANDBOX=1 : launching Chrome with --no-sandbox and --disable-setuid-sandbox. This disables the Chromium sandbox and is UNSAFE. Only use in isolated containers."
             );
             chrome_args.push("--no-sandbox".into());
@@ -1384,7 +1384,7 @@ impl Ghost {
             let detail = launch_failure_detail(&stderr_tail);
             let _ = child.kill().await;
             if !retry && !want_headless && is_platform_init_failure(&detail) {
-                eprintln!("[ghost] headful launch failed ({detail}); retrying headless");
+                crate::diag!("[ghost] headful launch failed ({detail}); retrying headless");
                 attempt += 1;
                 continue;
             }
@@ -1410,7 +1410,7 @@ impl Ghost {
                 let tail = stderr_tail
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                eprintln!(
+                crate::diag!(
                     "[ghost] setup CDP error: {error}; browser={exit}; stderr={}",
                     launch_failure_detail(&tail)
                 );
@@ -1429,7 +1429,7 @@ impl Ghost {
             Self::purge_cleared_session_cookies(&cdp).await;
             Self::restore_session_cookies(&cdp).await;
         } else if crate::config::cfg().debug.ghost {
-            eprintln!("[ghost] temp profile: purge + replant skipped");
+            crate::diag!("[ghost] temp profile: purge + replant skipped");
         }
 
         // One page target, attached flat.
@@ -1711,7 +1711,7 @@ impl Ghost {
         };
         if crate::config::cfg().debug.ghost {
             let tail = self.stderr_tail.lock().unwrap_or_else(|p| p.into_inner());
-            eprintln!(
+            crate::diag!(
                 "[ghost] transport={} exit={exit} generation={} frozen={} {}",
                 self.cdp.failure().unwrap_or("unavailable"),
                 self.document().generation,
@@ -2015,20 +2015,20 @@ impl Ghost {
             .map(|(host, _)| host.clone())
             .collect();
         if crate::config::cfg().debug.ghost {
-            eprintln!("[ghost] purge entry: {} cleared domain(s)", cleared.len());
+            crate::diag!("[ghost] purge entry: {} cleared domain(s)", cleared.len());
         }
         if cleared.is_empty() {
             return;
         }
         let Ok(res) = cdp.call(None, "Storage.getCookies", json!({})).await else {
             if crate::config::cfg().debug.ghost {
-                eprintln!("[ghost] purge: Storage.getCookies failed");
+                crate::diag!("[ghost] purge: Storage.getCookies failed");
             }
             return;
         };
         let cookies = Self::parse_cdp_cookies(&res);
         if crate::config::cfg().debug.ghost {
-            eprintln!(
+            crate::diag!(
                 "[ghost] purge: {} cleared domain(s), {} browser cookies",
                 cleared.len(),
                 cookies.len()
@@ -2078,9 +2078,10 @@ impl Ghost {
                 .await
                 && crate::config::cfg().debug.ghost
             {
-                eprintln!(
+                crate::diag!(
                     "[ghost] purge expire {} {}: {error}",
-                    cookie.name, cookie.domain
+                    cookie.name,
+                    cookie.domain
                 );
             }
         }

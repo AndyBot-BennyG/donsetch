@@ -49,7 +49,7 @@ pub async fn run(args: &[String]) {
         "clear" => cmd_clear(),
         "help" | "-h" | "--help" => print_help(),
         _ => {
-            eprintln!("{} unknown subcommand: {sub}", red("\u{2717}"));
+            crate::diag!("{} unknown subcommand: {sub}", red("\u{2717}"));
             print_help();
             std::process::exit(1);
         }
@@ -61,11 +61,11 @@ async fn cmd_add_plugin(args: &[String]) {
     let name = match args.get(4) {
         Some(n) if !n.trim().is_empty() => n.trim().to_ascii_lowercase(),
         _ => {
-            eprintln!(
+            crate::diag!(
                 "{} usage: donsetch keys add plugin <name> --cmd 'program [args...]' [--timeout <sec>] [--test]",
                 red("\u{2717}")
             );
-            eprintln!(
+            crate::diag!(
                 "   the plugin is any executable that answers queries over stdin/stdout JSON (see README)"
             );
             std::process::exit(1);
@@ -83,11 +83,11 @@ async fn cmd_add_plugin(args: &[String]) {
             "--cmd" | "-c" => {
                 i += 1;
                 let Some(v) = rest.get(i) else {
-                    eprintln!("{} --cmd needs a command string", red("\u{2717}"));
+                    crate::diag!("{} --cmd needs a command string", red("\u{2717}"));
                     std::process::exit(1);
                 };
                 if v.trim().is_empty() {
-                    eprintln!("{} --cmd needs a command string", red("\u{2717}"));
+                    crate::diag!("{} --cmd needs a command string", red("\u{2717}"));
                     std::process::exit(1);
                 }
                 cmd_str = Some(v.clone());
@@ -97,7 +97,7 @@ async fn cmd_add_plugin(args: &[String]) {
                 let v = match rest.get(i).and_then(|v| v.parse::<u64>().ok()) {
                     Some(v) if v > 0 => v,
                     _ => {
-                        eprintln!(
+                        crate::diag!(
                             "{} --timeout needs a positive whole number of seconds",
                             red("\u{2717}")
                         );
@@ -116,7 +116,7 @@ async fn cmd_add_plugin(args: &[String]) {
                     .parse::<u64>()
                     .unwrap_or(0);
                 if v == 0 {
-                    eprintln!(
+                    crate::diag!(
                         "{} --timeout needs a positive whole number of seconds",
                         red("\u{2717}")
                     );
@@ -125,8 +125,8 @@ async fn cmd_add_plugin(args: &[String]) {
                 timeout_ms = v.checked_mul(1000);
             }
             other => {
-                eprintln!("{} unknown flag: {other}", red("\u{2717}"));
-                eprintln!(
+                crate::diag!("{} unknown flag: {other}", red("\u{2717}"));
+                crate::diag!(
                     "   usage: donsetch keys add plugin <name> --cmd 'program [args...]' [--timeout <sec>] [--test]"
                 );
                 std::process::exit(1);
@@ -138,7 +138,7 @@ async fn cmd_add_plugin(args: &[String]) {
     let cmd_str = match cmd_str {
         Some(c) if !c.trim().is_empty() => c,
         _ => {
-            eprintln!(
+            crate::diag!(
                 "{} --cmd is required: donsetch keys add plugin {name} --cmd 'program [args...]'",
                 red("\u{2717}")
             );
@@ -148,7 +148,7 @@ async fn cmd_add_plugin(args: &[String]) {
     let cmd = match tokenize_cmd(&cmd_str) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("{} bad --cmd value: {e}", red("\u{2717}"));
+            crate::diag!("{} bad --cmd value: {e}", red("\u{2717}"));
             std::process::exit(1);
         }
     };
@@ -157,7 +157,7 @@ async fn cmd_add_plugin(args: &[String]) {
     let keyed: std::collections::HashSet<String> =
         byok_cfg.providers.iter().map(|p| p.name.clone()).collect();
     if let Err(e) = validate_plugin_name(&name, &keyed) {
-        eprintln!("  {} {e}", red("\u{2717}"));
+        crate::diag!("  {} {e}", red("\u{2717}"));
         std::process::exit(1);
     }
 
@@ -168,7 +168,7 @@ async fn cmd_add_plugin(args: &[String]) {
         timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS),
         &keyed,
     ) {
-        eprintln!("  {} {e}", red("\u{2717}"));
+        crate::diag!("  {} {e}", red("\u{2717}"));
         std::process::exit(1);
     }
     cfg.save();
@@ -223,7 +223,7 @@ async fn cmd_add_plugin(args: &[String]) {
                 println!("  {} probe ok: {n} result(s)", green("\u{2713}"));
             }
             Err(e) => {
-                eprintln!("  {} probe failed: {e}", red("\u{2717}"));
+                crate::diag!("  {} probe failed: {e}", red("\u{2717}"));
                 std::process::exit(1);
             }
         }
@@ -248,18 +248,18 @@ async fn cmd_add(args: &[String]) {
     let provider = match args.get(3) {
         Some(p) => p,
         None => {
-            eprintln!(
+            crate::diag!(
                 "{} usage: donsetch keys add <provider> <key>",
                 red("\u{2717}")
             );
-            eprintln!("   providers: {}", dim(&PROVIDERS.join(", ")));
+            crate::diag!("   providers: {}", dim(&PROVIDERS.join(", ")));
             std::process::exit(1);
         }
     };
     let key = match args.get(4) {
         Some(k) if !k.trim().is_empty() => k.trim().to_string(),
         _ => {
-            eprintln!(
+            crate::diag!(
                 "{} usage: donsetch keys add <provider> <key>",
                 red("\u{2717}")
             );
@@ -270,7 +270,7 @@ async fn cmd_add(args: &[String]) {
     let provider = parse_provider(provider);
 
     if !PROVIDERS.contains(&provider.as_str()) {
-        eprintln!(
+        crate::diag!(
             "{} unknown provider: {provider}\n   providers: {}",
             red("\u{2717}"),
             dim(&PROVIDERS.join(", "))
@@ -284,13 +284,13 @@ async fn cmd_add(args: &[String]) {
     if provider == "unlocker"
         && let Err(e) = crate::fetch::bypass::parse_key(&key, crate::fetch::bypass::DEFAULT_ZONE)
     {
-        eprintln!("  {} {e}", red("\u{2717}"));
+        crate::diag!("  {} {e}", red("\u{2717}"));
         std::process::exit(1);
     }
     if provider == "brightdata"
         && let Err(e) = crate::search::byok::brightdata_key_parts(&key)
     {
-        eprintln!("  {} {e}", red("\u{2717}"));
+        crate::diag!("  {} {e}", red("\u{2717}"));
         std::process::exit(1);
     }
 
@@ -397,11 +397,11 @@ fn cmd_remove(args: &[String]) {
         }
         Some(p) => parse_provider(p),
         None => {
-            eprintln!(
+            crate::diag!(
                 "{} usage: donsetch keys remove <provider> [key]   |   donsetch keys remove plugin <name>",
                 red("\u{2717}")
             );
-            eprintln!("   providers: {}", dim(&PROVIDERS.join(", ")));
+            crate::diag!("   providers: {}", dim(&PROVIDERS.join(", ")));
             std::process::exit(1);
         }
     };
@@ -427,7 +427,7 @@ fn cmd_remove(args: &[String]) {
 
     let removed = cfg.remove_keys(&provider, key);
     if !removed {
-        eprintln!("  {} no matching key found for {provider}", red("\u{2717}"));
+        crate::diag!("  {} no matching key found for {provider}", red("\u{2717}"));
         std::process::exit(1);
     }
 
@@ -474,7 +474,7 @@ fn cmd_remove_plugin(args: &[String]) {
     let name = match args.get(4) {
         Some(n) if !n.trim().is_empty() => n.trim().to_ascii_lowercase(),
         _ => {
-            eprintln!(
+            crate::diag!(
                 "{} usage: donsetch keys remove plugin <name>",
                 red("\u{2717}")
             );
@@ -484,7 +484,7 @@ fn cmd_remove_plugin(args: &[String]) {
 
     let mut cfg = PluginConfig::load();
     if !cfg.remove(&name) {
-        eprintln!("  {} no plugin named {name}", red("\u{2717}"));
+        crate::diag!("  {} no plugin named {name}", red("\u{2717}"));
         std::process::exit(1);
     }
     cfg.save();
@@ -572,11 +572,11 @@ fn cmd_default(args: &[String]) {
     let provider = match args.get(3) {
         Some(p) => parse_provider(p),
         None => {
-            eprintln!(
+            crate::diag!(
                 "{} usage: donsetch keys default <provider|local>",
                 red("\u{2717}")
             );
-            eprintln!(
+            crate::diag!(
                 "   providers: {} or {}",
                 dim(&PROVIDERS.join(", ")),
                 green("local")
@@ -591,7 +591,7 @@ fn cmd_default(args: &[String]) {
     // walls for the fetch path and has no SERP endpoint, so it can
     // never be the search default (#284).
     if provider != "local" && is_fetch_side(&provider) {
-        eprintln!(
+        crate::diag!(
             "  {} {} is fetch-side : not a search default",
             red("\u{2717}"),
             bold(&provider)
@@ -607,7 +607,7 @@ fn cmd_default(args: &[String]) {
         && !PROVIDERS.contains(&provider.as_str())
         && !PluginConfig::load().is_registered(&provider)
     {
-        eprintln!("  {} no keys configured", red("\u{2717}"));
+        crate::diag!("  {} no keys configured", red("\u{2717}"));
         std::process::exit(1);
     }
 
@@ -645,7 +645,7 @@ fn cmd_default(args: &[String]) {
             bold(&provider)
         );
     } else {
-        eprintln!(
+        crate::diag!(
             "  {} provider {provider} has no keys configured",
             red("\u{2717}")
         );
@@ -658,7 +658,7 @@ fn cmd_reset(args: &[String]) {
 
     let mut cfg = ByokConfig::load();
     if !cfg.is_configured() {
-        eprintln!("  {} no keys configured", red("\u{2717}"));
+        crate::diag!("  {} no keys configured", red("\u{2717}"));
         std::process::exit(1);
     }
 
@@ -666,7 +666,7 @@ fn cmd_reset(args: &[String]) {
     if let Some(p) = &provider
         && !cfg.providers.iter().any(|pc| &pc.name == p)
     {
-        eprintln!("  {} provider {p} has no keys configured", red("\u{2717}"));
+        crate::diag!("  {} provider {p} has no keys configured", red("\u{2717}"));
         std::process::exit(1);
     }
 
@@ -717,7 +717,7 @@ fn cmd_export(args: &[String]) {
                     );
                 }
                 Err(e) => {
-                    eprintln!("  {} failed to write {path}: {e}", red("\u{2717}"));
+                    crate::diag!("  {} failed to write {path}: {e}", red("\u{2717}"));
                     std::process::exit(1);
                 }
             }
@@ -729,8 +729,8 @@ fn cmd_import(args: &[String]) {
     let path = match args.get(3) {
         Some(p) if !p.trim().is_empty() => p,
         _ => {
-            eprintln!("{} usage: donsetch keys import <path>", red("\u{2717}"));
-            eprintln!(
+            crate::diag!("{} usage: donsetch keys import <path>", red("\u{2717}"));
+            crate::diag!(
                 "   import a config exported by {}",
                 green("donsetch keys export")
             );
@@ -741,7 +741,7 @@ fn cmd_import(args: &[String]) {
     let json = match std::fs::read_to_string(path) {
         Ok(j) => j,
         Err(e) => {
-            eprintln!("  {} failed to read {path}: {e}", red("\u{2717}"));
+            crate::diag!("  {} failed to read {path}: {e}", red("\u{2717}"));
             std::process::exit(1);
         }
     };
@@ -749,7 +749,7 @@ fn cmd_import(args: &[String]) {
     let cfg = match ByokConfig::from_json(&json) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("  {} invalid config file: {e}", red("\u{2717}"));
+            crate::diag!("  {} invalid config file: {e}", red("\u{2717}"));
             std::process::exit(1);
         }
     };

@@ -22,6 +22,7 @@ pub mod cpu;
 pub mod crawl;
 pub mod detect;
 pub mod dev;
+pub mod diag;
 // Also read verbatim by build.rs : see the file.
 mod display_name;
 pub use display_name::DISPLAY_NAME;

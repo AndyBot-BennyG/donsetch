@@ -2343,15 +2343,15 @@ async fn stealth_scorecard(record: bool, json: bool, parity: bool) -> i32 {
     let fetcher = match Fetcher::new(crate::profile::BrowserProfile::host_default()) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("  fetcher init failed: {e}");
+            crate::diag!("  fetcher init failed: {e}");
             return 1;
         }
     };
     let live = match scorecard::capture(&fetcher).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("  capture failed: {e}");
-            eprintln!("  (the echo endpoint is unreachable; retry or check egress)");
+            crate::diag!("  capture failed: {e}");
+            crate::diag!("  (the echo endpoint is unreachable; retry or check egress)");
             return 1;
         }
     };
@@ -2377,13 +2377,13 @@ async fn stealth_scorecard(record: bool, json: bool, parity: bool) -> i32 {
                     println!("  parity: tier 1 matches the local browser. Evergreen.");
                     0
                 } else {
-                    eprintln!("  {bad} layer(s) diverged from the local browser.");
+                    crate::diag!("  {bad} layer(s) diverged from the local browser.");
                     1
                 }
             }
             Err(e) => {
-                eprintln!("  ghost parity unavailable: {e}");
-                eprintln!("  (need a local Chrome: ghost must render the echo once)");
+                crate::diag!("  ghost parity unavailable: {e}");
+                crate::diag!("  (need a local Chrome: ghost must render the echo once)");
                 // Parity is best-effort evergreen, not the fixture gate.
                 1
             }
@@ -2401,7 +2401,7 @@ async fn stealth_scorecard(record: bool, json: bool, parity: bool) -> i32 {
         match serde_json::to_string_pretty(&fixture) {
             Ok(text) => {
                 if let Err(e) = std::fs::write(path, format!("{text}\n")) {
-                    eprintln!("  could not write {path}: {e}");
+                    crate::diag!("  could not write {path}: {e}");
                     return 1;
                 }
                 println!("  baseline recorded to {path}");
@@ -2409,7 +2409,7 @@ async fn stealth_scorecard(record: bool, json: bool, parity: bool) -> i32 {
                 return 0;
             }
             Err(e) => {
-                eprintln!("  could not serialize fixture: {e}");
+                crate::diag!("  could not serialize fixture: {e}");
                 return 1;
             }
         }
@@ -2418,7 +2418,7 @@ async fn stealth_scorecard(record: bool, json: bool, parity: bool) -> i32 {
     let baseline = match scorecard::baseline_fixture() {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("  {e}");
+            crate::diag!("  {e}");
             return 1;
         }
     };

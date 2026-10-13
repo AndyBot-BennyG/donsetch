@@ -42,9 +42,12 @@ pub fn canonicalize(pc: &mut PageChars) -> Option<f32> {
     }
     if crate::config::cfg().debug.pdf_matrix {
         for (i, c) in pc.chars.iter().take(6).enumerate() {
-            eprintln!(
+            crate::diag!(
                 "[rot_dbg] i={i} cp={:?} angle={:.2} size={:.2} rt={}",
-                c.cp, c.angle, c.size, c.rt
+                c.cp,
+                c.angle,
+                c.size,
+                c.rt
             );
         }
     }
@@ -53,7 +56,7 @@ pub fn canonicalize(pc: &mut PageChars) -> Option<f32> {
         return None;
     }
     if crate::config::cfg().debug.pdf {
-        eprintln!(
+        crate::diag!(
             "[rotate] page {} mass: 0deg={:.0} 90deg={:.0} 180deg={:.0} 270deg={:.0} chars={} total={:.0}",
             pc.index,
             mass[0],

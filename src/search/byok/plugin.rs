@@ -132,7 +132,7 @@ impl PluginConfig {
             Ok(raw) => match serde_json::from_str(&raw) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("[byok] warning: corrupt plugin file ({e}), ignoring");
+                    crate::diag!("[byok] warning: corrupt plugin file ({e}), ignoring");
                     Self::empty()
                 }
             },
@@ -178,7 +178,7 @@ impl PluginConfig {
                     }
                 }
             }
-            Err(e) => eprintln!("[byok] warning: failed to save plugins ({e})"),
+            Err(e) => crate::diag!("[byok] warning: failed to save plugins ({e})"),
         }
     }
 
@@ -566,7 +566,7 @@ fn parse_envelope(
             Some(u) if u.len() > MAX_URL_CHARS => {
                 dropped += 1;
                 if crate::config::cfg().debug.search {
-                    eprintln!(
+                    crate::diag!(
                         "[plugin] {plugin_name}: dropped result with a {}-byte url",
                         u.len()
                     );
@@ -577,7 +577,7 @@ fn parse_envelope(
             Some(u) => {
                 dropped += 1;
                 if crate::config::cfg().debug.search {
-                    eprintln!("[plugin] {plugin_name}: dropped result with bad url: {u:?}");
+                    crate::diag!("[plugin] {plugin_name}: dropped result with bad url: {u:?}");
                 }
                 continue;
             }
@@ -610,7 +610,7 @@ fn parse_envelope(
         });
     }
     if results.len() > MAX_RESULTS && crate::config::cfg().debug.search {
-        eprintln!(
+        crate::diag!(
             "[plugin] {plugin_name}: truncated {} results to {MAX_RESULTS}",
             results.len()
         );
@@ -718,7 +718,7 @@ pub(crate) async fn run_plugin(
         Ok(code) if code.success() => match parse_envelope(&body, name) {
             Ok((hits, degraded, dropped)) => {
                 if dropped > 0 && crate::config::cfg().debug.search {
-                    eprintln!("[plugin] {name}: dropped {dropped} invalid result entries");
+                    crate::diag!("[plugin] {name}: dropped {dropped} invalid result entries");
                 }
                 let ms = started.elapsed().as_millis() as u64;
                 Ok(super::ProviderOutcome { hits, ms, degraded })

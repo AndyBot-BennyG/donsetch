@@ -171,7 +171,7 @@ pub fn parse_with_instant(
         let dump = std::env::temp_dir().join(format!("donseek_debug_{engine}.html"));
         let dump = dump.to_string_lossy().into_owned();
         let _ = std::fs::write(&dump, html);
-        eprintln!(
+        crate::diag!(
             "[donseek] {engine}: 0 hits, dumped {len} bytes to {dump}",
             len = html.len()
         );

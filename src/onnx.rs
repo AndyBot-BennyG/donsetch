@@ -254,7 +254,7 @@ fn load_and_init() -> Result<(), String> {
         return Err("ONNX Runtime init failed (dynamic load)".to_string());
     }
 
-    eprintln!("[onnx] Runtime loaded from {}", lib_path.display());
+    crate::diag!("[onnx] Runtime loaded from {}", lib_path.display());
     Ok(())
 }
 

@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 other => {
-                    eprintln!(
+                    donsetch::diag!(
                         "query={query:?} mode={mode}: {}",
                         match other {
                             Ok(Err(e)) => e.to_string(),

@@ -82,7 +82,7 @@ fn soak_rss_stays_bounded() {
 
     let after = rss_kb();
     let growth_mb = (after.saturating_sub(baseline)) as f64 / 1024.0;
-    eprintln!("soak: baseline {baseline} kB → {after} kB (growth {growth_mb:.1} MB)");
+    donsetch::diag!("soak: baseline {baseline} kB → {after} kB (growth {growth_mb:.1} MB)");
     assert!(
         growth_mb < 100.0,
         "RSS grew {growth_mb:.1} MB over the soak : a store is leaking"

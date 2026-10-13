@@ -222,7 +222,7 @@ pub async fn capture_via_ghost(
     if parse.is_err()
         && let Err(write_err) = std::fs::write("/tmp/ghost-echo-blob.json", blob.as_bytes())
     {
-        eprintln!("ghost echo debug dump failed: {write_err}");
+        crate::diag!("ghost echo debug dump failed: {write_err}");
     }
     let mut snap = parse?;
     snap.source = "ghost (real local Chrome)".to_string();

@@ -76,4 +76,5 @@ mod revalidate_redirect;
 mod secure_cookie_leak;
 mod soak;
 mod state_sandbox;
+mod stderr_pipe_closed;
 mod token_invariants;

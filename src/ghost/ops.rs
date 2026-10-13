@@ -126,7 +126,7 @@ async fn turnstile_click_target(ghost: &Ghost) -> (f64, f64, &'static str) {
                 .map(|d| d.to_string().chars().take(300).collect())
                 .unwrap_or_else(|| "no widget in the light DOM".into()),
         };
-        eprintln!("[turnstile] target lookup found nothing: {why}");
+        crate::diag!("[turnstile] target lookup found nothing: {why}");
     }
     found.unwrap_or((480.0, 420.0, "fallback"))
 }
@@ -234,7 +234,7 @@ async fn solve_inner(
         }
 
         if crate::config::cfg().debug.ghost {
-            eprintln!(
+            crate::diag!(
                 "[ghost] t={:.0?} html={}B verdict={:?} challenged={} streak={}",
                 start.elapsed(),
                 html.len(),
@@ -248,7 +248,7 @@ async fn solve_inner(
                 while !html.is_char_boundary(cut) {
                     cut -= 1;
                 }
-                eprintln!("[ghost] html: {}", &html[..cut]);
+                crate::diag!("[ghost] html: {}", &html[..cut]);
             }
         }
 
@@ -274,7 +274,7 @@ async fn solve_inner(
             let (x, y, via) = turnstile_click_target(ghost).await;
             if via != "fallback" || !fallback_spent {
                 if crate::config::cfg().debug.ghost {
-                    eprintln!(
+                    crate::diag!(
                         "[ghost] turnstile click #{} via={via} at ({x:.0}, {y:.0})",
                         clicks + 1
                     );
@@ -482,7 +482,7 @@ async fn ghost_fetch_inner(
             }
             Err(e) => {
                 if crate::config::cfg().debug.ghost {
-                    eprintln!(
+                    crate::diag!(
                         "[ghost_fetch] outer_html err at t={:?}: {e}",
                         start.elapsed()
                     );
@@ -580,7 +580,7 @@ async fn ghost_fetch_inner(
                 // actually rendered. The fallback is allowed once.
                 if via != "fallback" || !fallback_spent {
                     if crate::config::cfg().debug.ghost {
-                        eprintln!(
+                        crate::diag!(
                             "[ghost_fetch] t={:.0?} turnstile click #{} via={via} at ({x:.0}, {y:.0})",
                             start.elapsed(),
                             clicked_challenge + 1,
@@ -756,7 +756,7 @@ async fn ghost_fetch_inner(
         let dead_threshold = if cur_len < 5000 { 8 } else { 15 };
         if dead_streak >= dead_threshold {
             if crate::config::cfg().debug.ghost {
-                eprintln!(
+                crate::diag!(
                     "[ghost_fetch] dead DOM: static + visible<80 for {dead_streak} polls, exiting early"
                 );
             }
@@ -766,7 +766,7 @@ async fn ghost_fetch_inner(
         prev_len = cur_len;
 
         if crate::config::cfg().debug.ghost {
-            eprintln!(
+            crate::diag!(
                 "[ghost_fetch] t={:.0?} html={}B visible={} challenged=false streak={} dead={}",
                 start.elapsed(),
                 cur_len,
@@ -787,7 +787,7 @@ async fn ghost_fetch_inner(
     let final_verdict = walls::detect_dom_smart(html.as_bytes());
     if matches!(final_verdict, Verdict::Challenge(_) | Verdict::Blocked) {
         if crate::config::cfg().debug.ghost {
-            eprintln!(
+            crate::diag!(
                 "[ghost_fetch] timeout on challenge page ({:?}), flagging as captcha",
                 final_verdict
             );

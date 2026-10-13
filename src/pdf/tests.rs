@@ -18,7 +18,7 @@ fn read(name: &str) -> Option<Vec<u8>> {
     match std::fs::read(&p) {
         Ok(b) => Some(b),
         Err(_) => {
-            eprintln!("SKIP: {} missing (scripts/download-corpus.sh)", p.display());
+            crate::diag!("SKIP: {} missing (scripts/download-corpus.sh)", p.display());
             None
         }
     }

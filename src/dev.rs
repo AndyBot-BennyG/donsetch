@@ -17,13 +17,13 @@ pub async fn dispatch(args: &[String]) {
         "resume-test" => resume_test_cmd(&args[1..]).await,
         "ghost" => ghost_cmd(&args[1..]).await,
         _ => {
-            eprintln!("dev subcommands: extract | probe | fingerprint | ghost | resume-test");
-            eprintln!();
-            eprintln!("  extract --input <file>     Extract from a local HTML/PDF file");
-            eprintln!("  probe <url> [proxy] [dump]  Raw fetch with diagnostics");
-            eprintln!("  fingerprint [url]            TLS/HTTP fingerprint check");
-            eprintln!("  resume-test <url>            3x fetch to test connection reuse");
-            eprintln!("  ghost <solve|render|shot> <url>  Ghost browser ops");
+            crate::diag!("dev subcommands: extract | probe | fingerprint | ghost | resume-test");
+            crate::diag!();
+            crate::diag!("  extract --input <file>     Extract from a local HTML/PDF file");
+            crate::diag!("  probe <url> [proxy] [dump]  Raw fetch with diagnostics");
+            crate::diag!("  fingerprint [url]            TLS/HTTP fingerprint check");
+            crate::diag!("  resume-test <url>            3x fetch to test connection reuse");
+            crate::diag!("  ghost <solve|render|shot> <url>  Ghost browser ops");
         }
     }
 }
@@ -70,7 +70,7 @@ async fn extract_cmd(args: &[String]) {
         i += 1;
     }
     let Some(path) = input_file else {
-        eprintln!(
+        crate::diag!(
             "usage: donsetch dev extract --input <file> [--url base] [--focus q] [--max n] [--offset n] [--selector css] [--links] [--media]"
         );
         return;
@@ -90,11 +90,11 @@ async fn extract_cmd(args: &[String]) {
     ) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("error: {e}");
+            crate::diag!("error: {e}");
             std::process::exit(1);
         }
     };
-    eprintln!(
+    crate::diag!(
         "--- extract={:.1}ms blocks={}/{} chars={}/{}",
         t0.elapsed().as_secs_f64() * 1000.0,
         ex.blocks_shown,
@@ -121,7 +121,7 @@ async fn probe_cmd(args: &[String]) {
             );
             if let Some(p) = args.get(2) {
                 std::fs::write(p, &out.body).ok();
-                eprintln!("dumped -> {p}");
+                crate::diag!("dumped -> {p}");
             }
         }
         Err(e) => println!("error: {e}"),
@@ -143,7 +143,7 @@ async fn fingerprint_cmd(args: &[String]) {
             println!("{}", String::from_utf8_lossy(&out.body));
         }
         Err(e) => {
-            eprintln!("error: {e}");
+            crate::diag!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -164,7 +164,7 @@ async fn resume_test_cmd(args: &[String]) {
                 out.used_pool
             ),
             Err(e) => {
-                eprintln!("fetch{i} error: {e}");
+                crate::diag!("fetch{i} error: {e}");
                 std::process::exit(1);
             }
         }
@@ -179,7 +179,7 @@ async fn ghost_cmd(args: &[String]) {
             let url = args.get(1).expect("usage: ghost solve <url>");
             let t0 = std::time::Instant::now();
             let mut g = ghost::Ghost::launch(&profile, None).await.expect("launch");
-            eprintln!("launched in {:.0}ms", t0.elapsed().as_secs_f64() * 1000.0);
+            crate::diag!("launched in {:.0}ms", t0.elapsed().as_secs_f64() * 1000.0);
             match ghost::ops::solve(&mut g, url, std::time::Duration::from_secs(30))
                 .await
                 .expect("solve")
@@ -210,7 +210,7 @@ async fn ghost_cmd(args: &[String]) {
             println!("rendered {} bytes", html.len());
             if let Some(p) = args.get(2) {
                 std::fs::write(p, &html).expect("write htmldump");
-                eprintln!("dom -> {p}");
+                crate::diag!("dom -> {p}");
             }
             let ex = extract::extract(
                 html.as_bytes(),
@@ -221,12 +221,14 @@ async fn ghost_cmd(args: &[String]) {
             .expect("extract");
             if let Some(p) = args.get(3) {
                 std::fs::write(p, &ex.markdown).expect("write mddump");
-                eprintln!("markdown -> {p}");
+                crate::diag!("markdown -> {p}");
             }
             print!("{}", &ex.markdown[..ex.markdown.len().min(2000)]);
-            eprintln!(
+            crate::diag!(
                 "--- thin={} kind={:?} blocks={}",
-                ex.thin, ex.content_kind, ex.blocks_total
+                ex.thin,
+                ex.content_kind,
+                ex.blocks_total
             );
             g.kill().await;
         }
@@ -249,7 +251,7 @@ async fn ghost_cmd(args: &[String]) {
             let mut g = ghost::Ghost::launch(&profile, None).await.expect("launch");
             match ghost::ops::selftest(&mut g).await {
                 Ok(j) => println!("{j}"),
-                Err(e) => eprintln!("selftest: {e}"),
+                Err(e) => crate::diag!("selftest: {e}"),
             }
             g.kill().await;
         }
@@ -279,7 +281,7 @@ async fn ghost_cmd(args: &[String]) {
             g.kill().await;
         }
         _ => {
-            eprintln!("ghost subcommands: solve | render | shot | selftest | freeze-check")
+            crate::diag!("ghost subcommands: solve | render | shot | selftest | freeze-check")
         }
     }
 }

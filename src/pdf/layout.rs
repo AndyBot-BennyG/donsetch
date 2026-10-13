@@ -141,9 +141,13 @@ pub fn assemble(page: PageChars) -> PageLines {
     let peek = crate::config::cfg().debug.pdf_chars;
     for c in chars {
         if peek {
-            eprintln!(
+            crate::diag!(
                 "stream y1={:6.1} cp={:?} s={:4.1} x0={:6.1} x1={:6.1}",
-                c.y1, c.cp, c.size, c.x0, c.x1
+                c.y1,
+                c.cp,
+                c.size,
+                c.x0,
+                c.x1
             );
         }
         if cur.is_empty() {
@@ -161,9 +165,10 @@ pub fn assemble(page: PageChars) -> PageLines {
             cur_bl = (cur_bl * (cur.len() as f32 - 1.0) + c.y1) / cur.len() as f32;
         } else {
             if peek {
-                eprintln!(
+                crate::diag!(
                     "--- split at y1={:6.1} cp={:?} (tol {tol:.1}) ---",
-                    c.y1, c.cp
+                    c.y1,
+                    c.cp
                 );
             }
             lines.push(std::mem::take(&mut cur));
@@ -395,7 +400,7 @@ fn build_line(cluster: &[&PdfChar], page_index: usize) -> Line {
     // Collapse runs of spaces and trim.
     let text = collapse_spaces(&text);
     if crate::config::cfg().debug.pdf_words {
-        eprintln!(
+        crate::diag!(
             "[words] {:?} -> {:?}",
             text,
             words.iter().map(|w| &w.text).collect::<Vec<_>>()

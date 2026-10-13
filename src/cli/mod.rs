@@ -172,7 +172,7 @@ pub struct Spinner {
 impl Spinner {
     pub fn new(msg: &str) -> Self {
         if !std::io::stderr().is_terminal() {
-            eprintln!("  {} {}", dim("..."), msg);
+            crate::diag!("  {} {}", dim("..."), msg);
             return Self {
                 stop: Arc::new(AtomicBool::new(true)),
                 handle: None,
@@ -188,11 +188,11 @@ impl Spinner {
             ];
             let mut i = 0;
             while !stop_clone.load(Ordering::Relaxed) {
-                eprint!("\r  {} {}   ", frames[i], msg);
+                crate::diag_raw!("\r  {} {}   ", frames[i], msg);
                 i = (i + 1) % frames.len();
                 thread::sleep(Duration::from_millis(80));
             }
-            eprint!("\r\x1b[K"); // Erase to end of line.
+            crate::diag_raw!("\r\x1b[K"); // Erase to end of line.
         });
         Self {
             stop,

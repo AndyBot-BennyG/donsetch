@@ -215,7 +215,7 @@ pub fn h3_route(origin: &str, egress: &str) -> Option<u16> {
         Some(entry.h3_port)
     });
     if crate::config::cfg().debug.ghost {
-        eprintln!("[routes] h3_route({origin}) = {hit:?}");
+        crate::diag!("[routes] h3_route({origin}) = {hit:?}");
     }
     hit
 }
@@ -259,7 +259,7 @@ pub fn record_h3(origin: &str, port: u16, ma_secs: u64, egress: &str) {
                     && cur.valid_until_ms + PERSIST_GRACE_MS >= fresh.valid_until_ms =>
             {
                 if crate::config::cfg().debug.ghost {
-                    eprintln!(
+                    crate::diag!(
                         "[routes] absorb {origin} eg={egress} skip (vouch not materially newer)"
                     );
                 }
@@ -268,7 +268,7 @@ pub fn record_h3(origin: &str, port: u16, ma_secs: u64, egress: &str) {
             _ => {}
         }
         if crate::config::cfg().debug.ghost {
-            eprintln!("[routes] absorb {origin} eg={egress} record (ma={ma_secs})");
+            crate::diag!("[routes] absorb {origin} eg={egress} record (ma={ma_secs})");
         }
         mem.routes.insert(origin.to_string(), fresh);
         mem.persist();
@@ -300,7 +300,7 @@ pub fn drop_h3(origin: &str) {
 pub fn save_h3_session(origin: &str, egress: &str, session: &[u8]) {
     with(|mem| {
         if crate::config::cfg().debug.ghost {
-            eprintln!(
+            crate::diag!(
                 "[routes] save_h3_session key={origin} eg={egress} n={} match={}",
                 mem.routes.len(),
                 mem.routes
@@ -336,7 +336,7 @@ pub fn load_h3_session(origin: &str, egress: &str) -> Option<Vec<u8>> {
     match result {
         Ok(b) => {
             if dbg {
-                eprintln!(
+                crate::diag!(
                     "[routes] load_h3_session {origin} eg={egress} hit ({}b)",
                     b.len()
                 );
@@ -345,7 +345,7 @@ pub fn load_h3_session(origin: &str, egress: &str) -> Option<Vec<u8>> {
         }
         Err(why) => {
             if dbg {
-                eprintln!("[routes] load_h3_session {origin} eg={egress} miss ({why})");
+                crate::diag!("[routes] load_h3_session {origin} eg={egress} miss ({why})");
             }
             None
         }

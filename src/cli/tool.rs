@@ -25,7 +25,7 @@ pub const EXIT_WALLED: u8 = 3;
 /// Run a tool command (fetch/search/crawl). Returns exit code.
 pub async fn run(cmd: &str, args: &[String]) -> u8 {
     let Some(tool) = spec::by_cli_cmd(cmd) else {
-        eprintln!("donsetch: unknown command '{cmd}'");
+        crate::diag!("donsetch: unknown command '{cmd}'");
         return EXIT_PERMANENT;
     };
 
@@ -69,7 +69,7 @@ pub async fn run(cmd: &str, args: &[String]) -> u8 {
                 return EXIT_OK;
             }
             _ => {
-                eprintln!("{e}");
+                crate::diag!("{e}");
                 return EXIT_PERMANENT;
             }
         },
@@ -81,7 +81,7 @@ pub async fn run(cmd: &str, args: &[String]) -> u8 {
     let daemon = match Daemon::new().await {
         Ok(d) => Arc::new(d),
         Err(e) => {
-            eprintln!("[{cmd}] error: failed to initialize: {e}");
+            crate::diag!("[{cmd}] error: failed to initialize: {e}");
             return EXIT_PERMANENT;
         }
     };
@@ -107,7 +107,7 @@ pub async fn run(cmd: &str, args: &[String]) -> u8 {
     let result = match server::call_tool(&daemon, &params).await {
         Ok(v) => v,
         Err((code, msg)) => {
-            eprintln!("[{cmd}] error (code {code}): {msg}");
+            crate::diag!("[{cmd}] error (code {code}): {msg}");
             daemon.shutdown().await;
             return EXIT_PERMANENT;
         }
@@ -118,7 +118,7 @@ pub async fn run(cmd: &str, args: &[String]) -> u8 {
     // a silent no-save.
     if cmd == "screenshot" && out_seen {
         let Some(path) = out_path else {
-            eprintln!("[screenshot] error: --out given without a path; nothing saved");
+            crate::diag!("[screenshot] error: --out given without a path; nothing saved");
             return EXIT_PERMANENT;
         };
         let img = result
@@ -137,19 +137,19 @@ pub async fn run(cmd: &str, args: &[String]) -> u8 {
                     .and_then(|b| b.get("data").and_then(|d| d.as_str()))
             });
         let Some(data) = img else {
-            eprintln!("[screenshot] error: capture returned no image to save");
+            crate::diag!("[screenshot] error: capture returned no image to save");
             return EXIT_PERMANENT;
         };
         let Ok(bytes) = BASE64_STANDARD
             .decode(data)
-            .map_err(|er| eprintln!("[screenshot] error: bad image payload: {er}"))
+            .map_err(|er| crate::diag!("[screenshot] error: bad image payload: {er}"))
         else {
             return EXIT_PERMANENT;
         };
         match std::fs::write(&path, &bytes) {
-            Ok(()) => eprintln!("[screenshot] saved {} bytes to {}", bytes.len(), path),
+            Ok(()) => crate::diag!("[screenshot] saved {} bytes to {}", bytes.len(), path),
             Err(er) => {
-                eprintln!("[screenshot] error: could not write {path}: {er}");
+                crate::diag!("[screenshot] error: could not write {path}: {er}");
                 return EXIT_PERMANENT;
             }
         }
@@ -247,7 +247,7 @@ async fn run_bulk_fetch(
                     }
                 }
                 Err((code, msg)) => {
-                    eprintln!("[fetch] error (code {code}): {msg}");
+                    crate::diag!("[fetch] error (code {code}): {msg}");
                     worst_exit = EXIT_PERMANENT;
                 }
             }
@@ -297,14 +297,14 @@ fn render_result(result: &Value, json_mode: bool, quiet: bool, cmd: &str) -> u8 
         } else {
             content.as_str()
         };
-        eprintln!("[{cmd}] error: {msg}");
+        crate::diag!("[{cmd}] error: {msg}");
     } else {
         // Success: content goes to stdout.
         print!("{content}");
     }
 
     if !quiet && !is_error {
-        eprintln!("{}", stats_line(cmd, result, content.len()));
+        crate::diag!("{}", stats_line(cmd, result, content.len()));
     }
 
     exit

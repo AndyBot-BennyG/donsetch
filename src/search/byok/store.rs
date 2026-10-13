@@ -150,7 +150,7 @@ impl ByokConfig {
         let value: serde_json::Value = match serde_json::from_str(&raw) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!(
+                crate::diag!(
                     "[byok] warning: key file {} is not valid JSON ({e}), ignoring",
                     path.display()
                 );
@@ -165,7 +165,7 @@ impl ByokConfig {
     /// others down with it.
     fn from_value(value: serde_json::Value, path: &std::path::Path) -> Self {
         let Some(obj) = value.as_object() else {
-            eprintln!(
+            crate::diag!(
                 "[byok] warning: key file {} is not a JSON object, ignoring",
                 path.display()
             );
@@ -191,7 +191,7 @@ impl ByokConfig {
                 .and_then(|n| n.as_str())
                 .unwrap_or("");
             if name.is_empty() {
-                eprintln!(
+                crate::diag!(
                     "[byok] warning: providers[{i}] in {} has no name, skipping that entry",
                     path.display()
                 );
@@ -202,7 +202,7 @@ impl ByokConfig {
                 .and_then(|p| p.get("keys"))
                 .and_then(|k| k.as_array())
             else {
-                eprintln!(
+                crate::diag!(
                     "[byok] warning: provider {name} in {} has no keys array, skipping that entry",
                     path.display()
                 );
@@ -214,13 +214,13 @@ impl ByokConfig {
                     // Same rule `validate()` applies on the write path:
                     // an empty key can never authenticate, so keeping it
                     // would only move the confusion one step along.
-                    Ok(k) if k.key.trim().is_empty() => eprintln!(
+                    Ok(k) if k.key.trim().is_empty() => crate::diag!(
                         "[byok] warning: {name} keys[{j}] in {} has an empty key, \
                          skipping that key",
                         path.display()
                     ),
                     Ok(k) => keys.push(k),
-                    Err(e) => eprintln!(
+                    Err(e) => crate::diag!(
                         "[byok] warning: {name} keys[{j}] in {} rejected ({e}), \
                          skipping that key; every other key is kept",
                         path.display()
@@ -277,7 +277,7 @@ impl ByokConfig {
                     }
                 }
             }
-            Err(e) => eprintln!("[byok] warning: failed to save keys ({e})"),
+            Err(e) => crate::diag!("[byok] warning: failed to save keys ({e})"),
         }
     }
 

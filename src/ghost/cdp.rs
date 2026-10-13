@@ -385,7 +385,7 @@ impl Cdp {
         })
         .await;
         if crate::config::cfg().debug.ghost && started.elapsed().as_millis() >= 1000 {
-            eprintln!(
+            crate::diag!(
                 "[cdp] {method} response wait {}ms",
                 started.elapsed().as_millis()
             );

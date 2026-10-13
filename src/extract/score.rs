@@ -19,12 +19,15 @@ pub fn find_main<'a>(doc: &'a Html) -> Option<ElementRef<'a>> {
     let body = doc.select(&scraper::Selector::parse("body").ok()?).next()?;
     let (body_stats, best) = walk(body, 0);
     if crate::config::cfg().debug.extract {
-        eprintln!(
+        crate::diag!(
             "[donsift] body stats: text={} link={} punct={} paras={}",
-            body_stats.text_len, body_stats.link_text_len, body_stats.punct, body_stats.paras
+            body_stats.text_len,
+            body_stats.link_text_len,
+            body_stats.punct,
+            body_stats.paras
         );
         if let Some((score, el)) = best {
-            eprintln!(
+            crate::diag!(
                 "[donsift] main = <{}> id={:?} class={:?} score={score:.0}",
                 el.value().name(),
                 el.value().id(),

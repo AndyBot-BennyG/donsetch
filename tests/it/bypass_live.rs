@@ -107,7 +107,7 @@ async fn unlock_legacy_json_wrapper() {
             "{req}"
         );
         let body = "200\n\n{\"status\":200,\"headers\":{\"content-type\":\"text/html\"},\"body\":\"<html>solved</html>\"}";
-        eprintln!("LEGACY-HANDLER spec: {body}");
+        donsetch::diag!("LEGACY-HANDLER spec: {body}");
         body.to_string()
     });
     let (outcome, _) = run_one(&ep, "https://walled.example/a", &dir).await;

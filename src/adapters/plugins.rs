@@ -202,7 +202,7 @@ fn load() -> LoadedCatalog {
         let file = match std::fs::File::open(&f) {
             Ok(h) => h,
             Err(e) => {
-                eprintln!("[adapters] skip plugins/{name}: unreadable: {e}");
+                crate::diag!("[adapters] skip plugins/{name}: unreadable: {e}");
                 skips += 1;
                 continue;
             }
@@ -210,13 +210,13 @@ fn load() -> LoadedCatalog {
         let meta = match file.metadata() {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("[adapters] skip plugins/{name}: unreadable: {e}");
+                crate::diag!("[adapters] skip plugins/{name}: unreadable: {e}");
                 skips += 1;
                 continue;
             }
         };
         if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
-            eprintln!(
+            crate::diag!(
                 "[adapters] skip plugins/{name}: file is {} bytes (max {MAX_FILE_BYTES})",
                 meta.len()
             );
@@ -230,7 +230,7 @@ fn load() -> LoadedCatalog {
         let text = match read {
             Ok(_) => text,
             Err(e) => {
-                eprintln!("[adapters] skip plugins/{name}: unreadable: {e}");
+                crate::diag!("[adapters] skip plugins/{name}: unreadable: {e}");
                 skips += 1;
                 continue;
             }
@@ -238,7 +238,7 @@ fn load() -> LoadedCatalog {
         match parse(&text, &name) {
             Ok(plugin) => {
                 if rows.iter().any(|r| r.plugin.name == plugin.name) {
-                    eprintln!(
+                    crate::diag!(
                         "[adapters] skip plugins/{name}: adapter '{}' already loaded from an earlier file",
                         plugin.name
                     );
@@ -246,7 +246,7 @@ fn load() -> LoadedCatalog {
                     continue;
                 }
                 if crate::adapters::builtin_via_suffixes().contains(&plugin.name.as_str()) {
-                    eprintln!(
+                    crate::diag!(
                         "[adapters] skip plugins/{name}: name '{}' is a bundled adapter name",
                         plugin.name
                     );
@@ -258,7 +258,7 @@ fn load() -> LoadedCatalog {
                 rows.push(CatalogRow { plugin, via });
             }
             Err(e) => {
-                eprintln!("[adapters] skip plugins/{name}: {e}");
+                crate::diag!("[adapters] skip plugins/{name}: {e}");
                 skips += 1;
             }
         }

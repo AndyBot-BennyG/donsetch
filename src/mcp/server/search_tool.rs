@@ -469,7 +469,7 @@ pub(super) async fn search_outcome(
             Ok(out) => return Ok(out),
             Err(e) => {
                 if crate::config::cfg().debug.search {
-                    eprintln!("[byok] all providers exhausted, falling back to local: {e}");
+                    crate::diag!("[byok] all providers exhausted, falling back to local: {e}");
                 }
                 // #285: keep the failure so the fallback result can
                 // say a provider was tried and why it failed; the
@@ -506,7 +506,7 @@ pub(super) async fn search_outcome(
             // local-first mode, try BYOK as a last resort.
             if byok_configured && local_first {
                 if crate::config::cfg().debug.search {
-                    eprintln!("[byok] local search failed, trying BYOK fallback: {e}");
+                    crate::diag!("[byok] local search failed, trying BYOK fallback: {e}");
                 }
                 match byok_search_cached(daemon, query, max, intent).await {
                     Ok(out) => Ok(out),
@@ -616,9 +616,10 @@ pub(crate) fn maybe_pre_solve(daemon: &Arc<Daemon>, top_url: Option<&str>) {
             }
         }
         if crate::config::cfg().debug.ghost {
-            eprintln!(
+            crate::diag!(
                 "[pre-solve] kicking background solve for {} ({})",
-                host_str, url_str
+                host_str,
+                url_str
             );
         }
         let t0 = std::time::Instant::now();
@@ -695,7 +696,7 @@ pub(crate) fn maybe_pre_solve(daemon: &Arc<Daemon>, top_url: Option<&str>) {
             );
         }
         if crate::config::cfg().debug.ghost {
-            eprintln!(
+            crate::diag!(
                 "[pre-solve] done for {} in {}ms",
                 host_str,
                 t0.elapsed().as_millis()

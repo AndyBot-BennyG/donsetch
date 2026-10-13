@@ -133,7 +133,7 @@ where
         // (Re)spawn if needed.
         if child.is_none() {
             if !pending.is_empty() {
-                eprintln!(
+                crate::diag!(
                     "[supervisor] replaying {} held bytes to the new daemon",
                     pending.len()
                 );
@@ -247,7 +247,9 @@ where
                         st.feed(&held);
                         pending = st.take_replay();
                     }
-                    eprintln!("[supervisor] daemon died mid-write : holding request for restart");
+                    crate::diag!(
+                        "[supervisor] daemon died mid-write : holding request for restart"
+                    );
                     restart_child(c, &mut restarts, born.elapsed());
                     child = None;
                 }
@@ -289,12 +291,12 @@ where
                         pending.extend(st.take_replay());
                     }
                     if !pending.is_empty() {
-                        eprintln!(
+                        crate::diag!(
                             "[supervisor] daemon died while idle : replaying {} unanswered bytes",
                             pending.len()
                         );
                     }
-                    eprintln!("[supervisor] daemon died while idle : restarting");
+                    crate::diag!("[supervisor] daemon died while idle : restarting");
                     restart_child(c, &mut restarts, born.elapsed());
                     child = None;
                 }
@@ -584,7 +586,7 @@ fn drain(mut c: Child) {
         match c.try_wait() {
             Ok(Some(_)) | Err(_) => return,
             Ok(None) if Instant::now() >= deadline => {
-                eprintln!("[supervisor] daemon did not exit after stdin closed : killing it");
+                crate::diag!("[supervisor] daemon did not exit after stdin closed : killing it");
                 let _ = c.kill();
                 let _ = c.wait();
                 return;
@@ -610,7 +612,7 @@ fn restart_child(c: &mut Child, restarts: &mut u32, lived: Duration) {
     let _ = c.wait();
     *restarts = next_restart_count(*restarts, lived);
     if *restarts >= MAX_RAPID_RESTARTS {
-        eprintln!(
+        crate::diag!(
             "[supervisor] {MAX_RAPID_RESTARTS} rapid crashes : giving up (the daemon needs a look)"
         );
         std::process::exit(1);

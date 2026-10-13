@@ -66,7 +66,7 @@ pub async fn run(args: &[String]) {
                 return;
             }
             other if other.starts_with("--") => {
-                eprintln!("donsetch login: unknown flag {other}\n");
+                crate::diag!("donsetch login: unknown flag {other}\n");
                 print_help();
                 return;
             }
@@ -74,7 +74,7 @@ pub async fn run(args: &[String]) {
                 if site.is_none() {
                     site = Some(a.clone());
                 } else {
-                    eprintln!("donsetch login: unexpected argument '{a}'\n");
+                    crate::diag!("donsetch login: unexpected argument '{a}'\n");
                     print_help();
                     return;
                 }
@@ -87,7 +87,7 @@ pub async fn run(args: &[String]) {
         "list" => list_sites(),
         "status" => {
             let Some(s) = site else {
-                eprintln!("donsetch login --status needs a domain");
+                crate::diag!("donsetch login --status needs a domain");
                 print_help();
                 return;
             };
@@ -95,7 +95,7 @@ pub async fn run(args: &[String]) {
         }
         "logout" => {
             let Some(s) = site else {
-                eprintln!("donsetch login --logout needs a domain");
+                crate::diag!("donsetch login --logout needs a domain");
                 print_help();
                 return;
             };
@@ -103,7 +103,7 @@ pub async fn run(args: &[String]) {
         }
         "import" => {
             let Some(f) = import_file else {
-                eprintln!("donsetch login --import needs a cookies.txt file");
+                crate::diag!("donsetch login --import needs a cookies.txt file");
                 print_help();
                 return;
             };
@@ -111,7 +111,7 @@ pub async fn run(args: &[String]) {
         }
         _ => {
             if let Err(e) = interactive(site.as_deref(), fresh, !no_probe).await {
-                eprintln!("donsetch login: {e}");
+                crate::diag!("donsetch login: {e}");
             }
         }
     }
@@ -392,7 +392,7 @@ fn print_status(domain: &str) {
     let key = match auth::normalize_target(domain) {
         Ok(t) => t.key,
         Err(e) => {
-            eprintln!("{e}");
+            crate::diag!("{e}");
             return;
         }
     };
@@ -447,7 +447,7 @@ fn logout(domain: &str, assume_yes: bool) {
     let key = match auth::normalize_target(domain) {
         Ok(t) => t.key,
         Err(e) => {
-            eprintln!("{e}");
+            crate::diag!("{e}");
             return;
         }
     };
@@ -474,7 +474,7 @@ fn import(file: &str, domain: Option<&str>, probe: bool) {
     let content = match std::fs::read_to_string(file) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("cannot read {file}: {e}");
+            crate::diag!("cannot read {file}: {e}");
             return;
         }
     };
@@ -485,7 +485,7 @@ fn import(file: &str, domain: Option<&str>, probe: bool) {
         let target = match auth::normalize_target(d) {
             Ok(o) => o,
             Err(e) => {
-                eprintln!("{e}");
+                crate::diag!("{e}");
                 return;
             }
         };

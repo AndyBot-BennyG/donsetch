@@ -210,7 +210,7 @@ impl Proc {
                 // KILL_ON_JOB_CLOSE has nothing to kill, so the browser tree
                 // outlives donsetch and orphaned Chrome processes pile up.
                 // Warn unconditionally : silent degradation is what hid this.
-                eprintln!(
+                crate::diag!(
                     "[ghost] AssignProcessToJobObject failed: {error} : browser tree will not be reaped on exit, leaving orphaned Chrome processes"
                 );
             }

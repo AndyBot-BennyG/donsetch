@@ -839,9 +839,12 @@ where
                         m.b.atan2(m.a).to_degrees()
                     };
                     if crate::config::cfg().debug.pdf_matrix && i < 8 {
-                        eprintln!(
+                        crate::diag!(
                             "[matrix] i={i} a={:.3} b={:.3} c={:.3} d={:.3} angle={angle:.1}",
-                            m.a, m.b, m.c, m.d
+                            m.a,
+                            m.b,
+                            m.c,
+                            m.d
                         );
                     }
                     let size = if size.is_finite() && size > 1.5 {
@@ -940,7 +943,7 @@ where
                 },
             }));
             if crate::config::cfg().debug.pdf && pi % 50 == 0 {
-                eprintln!("[engine] page {pi}/{page_count} done");
+                crate::diag!("[engine] page {pi}/{page_count} done");
             }
         }
 

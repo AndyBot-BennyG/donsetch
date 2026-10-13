@@ -52,7 +52,7 @@ extern "C" fn alpn_select(
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
-    eprintln!("chrome_h2_probe is a Linux-only dev rig");
+    donsetch::diag!("chrome_h2_probe is a Linux-only dev rig");
 }
 
 #[cfg(target_os = "linux")]
@@ -152,7 +152,7 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
-    eprintln!("captured {} bytes", buf.len());
+    donsetch::diag!("captured {} bytes", buf.len());
     parse_and_print(&buf);
     decode_and_print(&buf);
 
@@ -244,7 +244,7 @@ fn decode_and_print(buf: &[u8]) {
         if buf[off + 3] == 0x1 {
             let body = &buf[off + 9..off + 9 + len];
             if !body.is_empty() && body[4] & 0x20 != 0 {
-                eprintln!(
+                donsetch::diag!(
                     "priority: E={} dep={} weight={}",
                     body[0] >> 7,
                     (((body[0] & 0x7f) as u32) << 24)
@@ -261,9 +261,9 @@ fn decode_and_print(buf: &[u8]) {
             };
             let mut dec = donsetch::transport::h2::hpack::Decoder::new();
             if let Ok(hdrs) = dec.decode(hpack) {
-                eprintln!("decoded {} headers:", hdrs.len());
+                donsetch::diag!("decoded {} headers:", hdrs.len());
                 for (k, v) in hdrs {
-                    eprintln!("  {k}: {v}");
+                    donsetch::diag!("  {k}: {v}");
                 }
             }
             break;

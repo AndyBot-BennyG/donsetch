@@ -452,7 +452,7 @@ mod tests {
                     .all(|h| !h.title.is_empty() && url::Url::parse(&h.url).is_ok())
             );
             assert!(hits.iter().any(|h| !h.snippet.is_empty()));
-            eprintln!(
+            crate::diag!(
                 "{query:?}: {} hits, {ms} ms, first={}",
                 hits.len(),
                 hits[0].url

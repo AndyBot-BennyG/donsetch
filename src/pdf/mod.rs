@@ -296,7 +296,7 @@ pub(crate) fn parse_with(bytes: &[u8], max_pages: usize) -> Result<ParsedPdf, Pd
     // Per-page OCR confidence for PageMeta (final-text trust).
     let mut ocr_page_conf: std::collections::HashMap<usize, f32> = std::collections::HashMap::new();
     if crate::config::cfg().debug.pdf {
-        eprintln!(
+        crate::diag!(
             "[ocr] candidates: {:?} (enabled={})",
             needs_ocr,
             ocr::enabled()
@@ -318,11 +318,11 @@ pub(crate) fn parse_with(bytes: &[u8], max_pages: usize) -> Result<ParsedPdf, Pd
                             if decided_hint.is_none() {
                                 decided_hint = Some(kind);
                                 if crate::config::cfg().debug.pdf {
-                                    eprintln!("[ocr] recognizer locked: {kind}");
+                                    crate::diag!("[ocr] recognizer locked: {kind}");
                                 }
                             }
                             if crate::config::cfg().debug.pdf {
-                                eprintln!(
+                                crate::diag!(
                                     "[ocr] page {pi}: {} lines in {:?}",
                                     olines.len(),
                                     t0.elapsed()
@@ -345,7 +345,7 @@ pub(crate) fn parse_with(bytes: &[u8], max_pages: usize) -> Result<ParsedPdf, Pd
                         }
                         Ok((_olines, _kind)) => {
                             if crate::config::cfg().debug.pdf {
-                                eprintln!(
+                                crate::diag!(
                                     "[ocr] page {pi}: zero usable lines in {:?}",
                                     t0.elapsed()
                                 );
@@ -354,7 +354,7 @@ pub(crate) fn parse_with(bytes: &[u8], max_pages: usize) -> Result<ParsedPdf, Pd
                         Err(e) => {
                             ocr_failed = true;
                             if crate::config::cfg().debug.pdf {
-                                eprintln!("[ocr] page {pi} failed: {e}");
+                                crate::diag!("[ocr] page {pi} failed: {e}");
                             }
                             break;
                         }
@@ -363,7 +363,7 @@ pub(crate) fn parse_with(bytes: &[u8], max_pages: usize) -> Result<ParsedPdf, Pd
             }
             Err(e) => {
                 if crate::config::cfg().debug.pdf {
-                    eprintln!("[ocr] rasterize_pages failed: {e:?}");
+                    crate::diag!("[ocr] rasterize_pages failed: {e:?}");
                 }
             }
         }
@@ -448,7 +448,7 @@ pub(crate) fn parse_with(bytes: &[u8], max_pages: usize) -> Result<ParsedPdf, Pd
     // flagged lane (best-effort; no column reconstruction in v1).
     let dbg = crate::config::cfg().debug.pdf;
     if dbg {
-        eprintln!("[parse] reading order start: {} pages", pages.len());
+        crate::diag!("[parse] reading order start: {} pages", pages.len());
     }
     let mut vertical_pages = 0usize;
     let mut ordered_by_page: Vec<Vec<layout::Line>> = Vec::with_capacity(pages.len());
@@ -460,7 +460,7 @@ pub(crate) fn parse_with(bytes: &[u8], max_pages: usize) -> Result<ParsedPdf, Pd
             vertical_pages += 1;
         }
         if dbg {
-            eprintln!(
+            crate::diag!(
                 "[parse] page {} ordering ({} lines)",
                 p.index,
                 p.lines.len()
@@ -521,11 +521,11 @@ pub(crate) fn parse_with(bytes: &[u8], max_pages: usize) -> Result<ParsedPdf, Pd
 
     // Semantic blocks.
     if dbg {
-        eprintln!("[parse] classify start");
+        crate::diag!("[parse] classify start");
     }
     let doc_blocks = blocks::classify(&pages, &ordered_by_page, &ctx);
     if dbg {
-        eprintln!("[parse] classify end: {} blocks", doc_blocks.len());
+        crate::diag!("[parse] classify end: {} blocks", doc_blocks.len());
     }
 
     // Language sniff on the produced text.

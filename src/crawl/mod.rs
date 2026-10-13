@@ -504,7 +504,7 @@ fn resume_store_issue(tok: &str, state: &ResumeState) {
     migrate_legacy_store();
     resume_store_sweep(&dir);
     if !write_token_file(&dir, tok, state) {
-        eprintln!("[crawl] resume token write failed; the token will not survive a restart");
+        crate::diag!("[crawl] resume token write failed; the token will not survive a restart");
     }
 }
 
@@ -882,13 +882,13 @@ impl Crawler {
                                 candidates.push(u);
                             }
                         }
-                        eprintln!(
+                        crate::diag!(
                             "[crawl] thin static map; rendered harvest added {} candidate link(s)",
                             candidates.len() - before
                         );
                     }
                     None => {
-                        eprintln!("[crawl] thin static map; rendered harvest unavailable");
+                        crate::diag!("[crawl] thin static map; rendered harvest unavailable");
                     }
                 }
             }

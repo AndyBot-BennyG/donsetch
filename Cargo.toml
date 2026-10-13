@@ -122,6 +122,15 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # [package.metadata.winresource]; build.rs sets every field programmatically.
 winresource = { version = "0.1", default-features = false }
 
+# Every diagnostic goes through `diag!` (src/diag.rs): std's stderr
+# print macros panic when the write fails, and the shipped profile is
+# `panic = "abort"`, so a closed stderr pipe aborted the MCP daemon
+# mid-session (#364). Denied at the package level so a raw stderr print
+# cannot come back -- `just lint` and CI fail on one. `writeln!` to
+# stderr is what `diag!` expands to, so it is not flagged.
+[lints.clippy]
+print_stderr = "deny"
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

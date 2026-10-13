@@ -413,7 +413,7 @@ impl StateWriteLock {
                     // the process down here: locking is best effort
                     // (like the flock failure below), and the save
                     // reports its own persist error.
-                    eprintln!("[ghost] cookie vault lock failed: {error}");
+                    crate::diag!("[ghost] cookie vault lock failed: {error}");
                     return Self { file: None };
                 }
             };
@@ -427,7 +427,7 @@ impl StateWriteLock {
                 if error.kind() != std::io::ErrorKind::Interrupted {
                     // Best effort, like every other state write:
                     // report and proceed rather than wedge the caller.
-                    eprintln!("[ghost] cookie vault lock failed: {error}");
+                    crate::diag!("[ghost] cookie vault lock failed: {error}");
                     STATE_LOCK_DEPTH.with(|d| d.set(d.get() + 1));
                     return Self { file: Some(file) };
                 }
@@ -459,7 +459,7 @@ impl StateWriteLock {
                         std::thread::sleep(std::time::Duration::from_millis(5));
                     }
                     Err(error) => {
-                        eprintln!("[ghost] cookie vault lock failed: {error}");
+                        crate::diag!("[ghost] cookie vault lock failed: {error}");
                         return Self { file: None };
                     }
                 }
@@ -1592,7 +1592,7 @@ impl GhostState {
                 std::fs::rename(&tmp, &p)
             })();
             if let Err(error) = persist {
-                eprintln!("[ghost] cookie vault persist failed: {error}");
+                crate::diag!("[ghost] cookie vault persist failed: {error}");
             }
         }
     }
