@@ -5,6 +5,34 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.8.1] - 2026-10-13
+
+### Fixed
+
+- Focus scoring no longer treats inherited heading breadcrumbs as evidence
+  in every paragraph. Repeated subject terms yield to more specific query
+  terms, and incidental weak matches no longer pull in unrelated sections.
+  API identifiers also match prose headings (TaskGroup / task groups).
+  Heading context and source order are preserved; repeated heading names
+  resolve to their actual ancestors. Genuine misses and broad queries still
+  return labeled full content.
+- Focus can select individual table rows with their headers and complete
+  cells, and unordered list items with their nested conditions. Omitted rows
+  and items are counted, and a narrowed result does not claim the whole source
+  is complete. Small enumerations stay intact; ordered procedures retain their
+  numbering and steps.
+- HTML data tables no longer discard everything after row 40 or cut cells at
+  120 characters before focus, probes or pagination can read them. Output
+  budgets and resumable offsets apply to the complete extracted table. Later
+  rows also retain extra cells when earlier rows have fewer columns.
+- A short successful focus result no longer labels a complete source page as
+  a JavaScript shell or triggers unnecessary browser recovery. Shell detection
+  uses the source extraction yield.
+- `web_fetch` actions help now leads with the browser routing cost and tells
+  agents to omit actions for static reads (#365). The tool description also
+  distinguishes JavaScript rendering from page interaction. Actions remain
+  optional; their schema bounds and runtime behavior are unchanged.
+
 ## [4.8.0] - 2026-10-13
 
 ### Added

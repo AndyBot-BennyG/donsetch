@@ -93,6 +93,7 @@ pub fn extract(body: &[u8], url: &str, opts: &ExtractOptions) -> Option<Extracte
         next_offset: next,
         blocks_total: blocks,
         blocks_shown: blocks,
+        focus_omitted: false,
         thin: false,
         content_kind: kind,
         lang: "en".to_string(),

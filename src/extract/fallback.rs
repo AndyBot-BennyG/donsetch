@@ -83,6 +83,7 @@ pub fn text_fallback(
         next_offset: next,
         blocks_total,
         blocks_shown: blocks_total,
+        focus_omitted: false,
         tokens_est,
         thin: total_text < FALLBACK_THIN_TEXT,
         content_kind: ContentKind::Page,

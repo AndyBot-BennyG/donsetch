@@ -50,6 +50,7 @@ pub fn extract(body: &[u8], url: &str, opts: &ExtractOptions) -> Option<Extracte
         next_offset: next,
         blocks_total: deps_n,
         blocks_shown: deps_n,
+        focus_omitted: false,
         thin: false,
         content_kind: ContentKind::Listing,
         lang: "en".to_string(),

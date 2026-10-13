@@ -260,6 +260,7 @@ fn finish(
         next_offset: next,
         blocks_total: total_items,
         blocks_shown: shown,
+        focus_omitted: false,
         tokens_est,
         thin: shown == 0,
         content_kind: ContentKind::Listing,

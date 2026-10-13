@@ -3301,3 +3301,37 @@ fn resume_store_peek_reads_the_seed_without_consuming_the_token() {
     assert!(super::resume_store_peek("cunknown0").is_err());
     assert!(super::resume_store_peek("../victim").is_err());
 }
+
+#[tokio::test]
+async fn focus_timeline_survives_related_cards_and_a_2000_byte_page_budget() {
+    let mut body = String::from(
+        "<html lang=en><title>AI Act</title><body><article><h1>AI Act</h1><h2>Related resources</h2>",
+    );
+    for n in 0..24 {
+        body.push_str(&format!("<h3>AI resource {n}</h3><p>AI systems and AI policy support innovation in the regional economy. Related guidance for businesses describes research funding and industry partnerships.</p>"));
+    }
+    body.push_str("<h2>Application timeline</h2><p>The AI Act application deadlines depend on the system category.</p><table><tr><th>Category</th><th>Application date</th></tr><tr><td>High-risk systems</td><td>2 December 2027</td></tr><tr><td>Regulated products</td><td>2 August 2028</td></tr></table></article></body></html>");
+    let (fetch, _) = MockSite::new()
+        .page("https://ex.com/ai-act/", 200, &body)
+        .fetcher();
+    let mut options = opts();
+    options.mode = CrawlMode::Content;
+    options.max_pages = 1;
+    options.per_page_max = 2000;
+    options.focus = Some("AI Act application timeline deadlines".into());
+    let result = Crawler::new(fetch, gov())
+        .crawl("https://ex.com/ai-act/", options, None)
+        .await
+        .unwrap();
+    assert_eq!(result.pages.len(), 1, "{:?}", result.skipped);
+    let page = &result.pages[0];
+    assert!(
+        page.markdown.contains("2 December 2027"),
+        "{}",
+        page.markdown
+    );
+    assert!(page.markdown.contains("2 August 2028"), "{}", page.markdown);
+    assert!(!page.markdown.contains("industry partnerships"));
+    assert!(page.markdown.len() <= 2000);
+    assert!(page.next_offset.is_none());
+}

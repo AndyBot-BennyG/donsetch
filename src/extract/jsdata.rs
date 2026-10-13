@@ -317,6 +317,7 @@ pub fn extract(html: &str, url: &str, opts: &ExtractOptions) -> Option<Extracted
         next_offset: next,
         blocks_total: kept.len(),
         blocks_shown: kept.len(),
+        focus_omitted: false,
         thin: total < 800,
         content_kind: ContentKind::Page,
         lang: guess_lang(&md),

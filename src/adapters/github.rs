@@ -54,6 +54,7 @@ pub fn extract(html: &str, url: &str, opts: &ExtractOptions) -> Option<Extracted
         next_offset: next,
         blocks_total: 0,
         blocks_shown: 0,
+        focus_omitted: false,
         thin: false,
         content_kind: ContentKind::Forum,
         lang: "en".to_string(),

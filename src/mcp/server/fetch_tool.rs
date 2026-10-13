@@ -4278,7 +4278,7 @@ pub(super) fn finish_result(
         "content_ok": !ex.thin && verdict == "ContentOk",
         "content_kind": format!("{:?}", ex.content_kind),
         "read_status": if ex.thin { "thin" } else if ex.next_offset.is_some() || ex.markdown.len() < ex.total_chars { "partial" } else { "content" },
-        "content_complete": !ex.thin && ex.next_offset.is_none() && ex.markdown.len() == ex.total_chars && ex.blocks_shown == ex.blocks_total,
+        "content_complete": !ex.thin && ex.next_offset.is_none() && ex.markdown.len() == ex.total_chars && ex.blocks_shown == ex.blocks_total && !ex.focus_omitted,
     });
     if let Some(partial) = &ex.partial {
         structured["partial"] = json!(true);
@@ -4655,6 +4655,34 @@ mod fetch_output_contract_tests {
         assert_eq!(observed["_meta"]["com.donsetch/fetch-debug"]["status"], 201);
     }
 
+    #[test]
+    fn focused_rows_do_not_claim_the_whole_source_is_complete() {
+        let mut ex = extracted("| Rule | Details |\n| --- | --- |\n| Audit | Seven years |\n");
+        ex.blocks_shown = ex.blocks_total;
+        ex.focus_omitted = true;
+        let output = finish_result(
+            &ex,
+            "1",
+            200,
+            "ContentOk",
+            "https://owned.test/table",
+            &Trace::default(),
+            0,
+        );
+        assert_eq!(output["structuredContent"]["content_complete"], false);
+        ex.focus_omitted = false;
+        let output = finish_result(
+            &ex,
+            "1",
+            200,
+            "ContentOk",
+            "https://owned.test/table",
+            &Trace::default(),
+            0,
+        );
+        assert_eq!(output["structuredContent"]["content_complete"], true);
+    }
+
     pub(super) fn extracted(markdown: &str) -> Extracted {
         Extracted {
             markdown: markdown.into(),
@@ -4666,6 +4694,7 @@ mod fetch_output_contract_tests {
             next_offset: None,
             blocks_total: 4,
             blocks_shown: 3,
+            focus_omitted: false,
             tokens_est: markdown.len() / 4,
             thin: false,
             content_kind: ContentKind::Article,

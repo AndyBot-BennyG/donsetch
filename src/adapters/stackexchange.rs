@@ -121,6 +121,7 @@ pub fn extract(html: &str, url: &str, opts: &ExtractOptions) -> Option<Extracted
         next_offset: next,
         blocks_total: n,
         blocks_shown: n,
+        focus_omitted: false,
         thin: false,
         content_kind: ContentKind::Forum,
         lang: "en".to_string(),

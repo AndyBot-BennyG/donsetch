@@ -252,7 +252,7 @@ pub fn render(meta: &Meta, url: &str, kept: &[&Block], opts: &super::ExtractOpti
                 );
                 let cols = headers
                     .len()
-                    .max(rows.first().map(|r| r.len()).unwrap_or(0));
+                    .max(rows.iter().map(Vec::len).max().unwrap_or(0));
                 if cols == 0 {
                     continue;
                 }

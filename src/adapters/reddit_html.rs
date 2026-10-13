@@ -87,6 +87,7 @@ pub fn extract(html: &str, url: &str, opts: &ExtractOptions) -> Option<Extracted
         next_offset: next,
         blocks_total: blocks,
         blocks_shown: blocks,
+        focus_omitted: false,
         thin: false,
         content_kind: kind,
         lang: "en".to_string(),
