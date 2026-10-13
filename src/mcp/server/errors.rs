@@ -268,7 +268,7 @@ fn has_standalone_digits(text: &str, needle: &str) -> bool {
 /// | cloak.suspected | tier-1 content is likely decoy |
 /// | content.notfound / content.binary / content.oversize / content.extract / content.incomplete | body |
 /// | guard.ssrf | blocked by design |
-/// | `policy.denied.<reason>` | refused by a local DonSeTch rule; `<reason>` is the rule's subcode, or `unspecified`. Always three segments: prefix-match `policy.denied`, never the whole code |
+/// | `policy.denied.<reason>` | excluded by the operator's local DonSeTch rules; `<reason>` is the rule's subcode, or `unspecified`. Always three segments: prefix-match `policy.denied`, never the whole code |
 /// | parse.encoding | charset-level failure |
 /// | deadline.hit | time budget exhausted |
 /// | crawl.seed / crawl.resume / fetch.invalid / search.invalid / crawl.invalid | input errors |
@@ -297,7 +297,9 @@ pub(super) fn error_code(msg: &str, structured: Option<&Value>) -> Cow<'static, 
         // wrapper prefix, hence `contains`. Next to it may sit the rule
         // key and the operator's message, which must not pick the code.
         // Literal of `crate::rules::policy_code(None)`.
-        _ if m.contains("blocked by a local donsetch rule") => "policy.denied.unspecified",
+        _ if m.contains("excluded by the operator's local donsetch rules") => {
+            "policy.denied.unspecified"
+        }
         _ if m.contains("proxy configuration:") || m.starts_with("proxy configuration error:") => {
             "proxy.config"
         }

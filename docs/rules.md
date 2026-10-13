@@ -444,7 +444,7 @@ keeps the groups with their `errorKind`, `next_action`, `count` and capped
 every output mode and even with `-q`:
 
 ```
-[crawl] 16 URLs denied by local DonSeTch rules (1 rule)
+[crawl] 16 URLs excluded by the operator's local DonSeTch rules (1 rule)
 ```
 
 Neither the text nor `[meta]` names the rule key; the structured part, for

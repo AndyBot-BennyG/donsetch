@@ -473,7 +473,7 @@ pub fn rules() -> &'static RuleSet {
         // `config::validate()` compiled this same section before the config
         // was installed, so this error is unreachable from a real load.
         RuleSet::compile(section).unwrap_or_else(|e| {
-            eprintln!("[donsetch rules] {e}; running with no rules");
+            crate::diag!("[donsetch rules] {e}; running with no rules");
             RuleSet::empty()
         })
     })

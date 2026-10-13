@@ -34,7 +34,7 @@ pub fn run(args: &[String]) {
             std::process::exit(1);
         }
         Some(other) => {
-            eprintln!("donsetch rules: unknown subcommand '{other}'\n");
+            crate::diag!("donsetch rules: unknown subcommand '{other}'\n");
             help();
             std::process::exit(1);
         }
@@ -45,7 +45,7 @@ pub fn run(args: &[String]) {
         return;
     }
     let [url_arg] = rest else {
-        eprintln!("Usage: donsetch rules test <url>");
+        crate::diag!("Usage: donsetch rules test <url>");
         std::process::exit(1);
     };
 
@@ -55,21 +55,21 @@ pub fn run(args: &[String]) {
     let loaded = match config::load() {
         Ok(loaded) => loaded,
         Err(e) => {
-            eprintln!("donsetch: {e}");
+            crate::diag!("donsetch: {e}");
             std::process::exit(1);
         }
     };
     let set = match RuleSet::compile(&loaded.config.rules) {
         Ok(set) => set,
         Err(e) => {
-            eprintln!("donsetch: {e}");
+            crate::diag!("donsetch: {e}");
             std::process::exit(1);
         }
     };
     let url = match url::Url::parse(url_arg) {
         Ok(url) => url,
         Err(e) => {
-            eprintln!(
+            crate::diag!(
                 "donsetch rules test: {url_arg:?} is not an absolute URL ({e}); \
                  write it with its scheme, e.g. https://example.com/"
             );

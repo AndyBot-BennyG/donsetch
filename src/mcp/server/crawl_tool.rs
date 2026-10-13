@@ -840,7 +840,7 @@ pub(super) fn compute_crawl_next_action(result: &crate::crawl::CrawlResult) -> S
             .map(|(_, w)| w.as_str())
             .partition(|r| is_policy_skip(r));
         if skip_reasons.is_empty() && (!policy_rows.is_empty() || !result.denied.is_empty()) {
-            return "every URL this crawl reached was refused by a local DonSeTch rule: do not retry them through DonSeTch; use another source, following the rule's Next action where the denied list gives one.".into();
+            return "every URL this crawl reached is excluded by the operator's local DonSeTch rules, so none of them was fetched here; another source may have this content, and the denied list's Next action says which one the operator wants.".into();
         }
         let all_scope = !skip_reasons.is_empty()
             && skip_reasons

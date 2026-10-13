@@ -270,7 +270,7 @@ fn render_result(result: &Value, json_mode: bool, quiet: bool, cmd: &str) -> u8 
             .get("structuredContent")
             .and_then(crawl_denied_notice)
     {
-        eprintln!("{notice}");
+        crate::diag!("{notice}");
     }
 
     if json_mode {
@@ -459,7 +459,7 @@ fn stats_line(cmd: &str, result: &Value, content_len: usize) -> String {
 }
 
 /// The stderr line for a crawl that local rules refused URLs in, e.g.
-/// `[crawl] 16 URLs denied by local DonSeTch rules (1 rule)`, read from
+/// `[crawl] 16 URLs excluded by the operator's local DonSeTch rules (1 rule)`, read from
 /// `denied_by_local_rules` in the crawl's structured content. `None`
 /// when nothing was denied.
 fn crawl_denied_notice(structured: &Value) -> Option<String> {
@@ -473,7 +473,7 @@ fn crawl_denied_notice(structured: &Value) -> Option<String> {
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
     Some(format!(
-        "[crawl] {count} URL{} denied by local DonSeTch rules ({rules} rule{})",
+        "[crawl] {count} URL{} excluded by the operator's local DonSeTch rules ({rules} rule{})",
         if count == 1 { "" } else { "s" },
         if rules == 1 { "" } else { "s" },
     ))
@@ -728,7 +728,7 @@ mod tests {
         });
         assert_eq!(
             crawl_denied_notice(&sc).as_deref(),
-            Some("[crawl] 16 URLs denied by local DonSeTch rules (1 rule)")
+            Some("[crawl] 16 URLs excluded by the operator's local DonSeTch rules (1 rule)")
         );
         let sc = json!({
             "denied_by_local_rules": {
@@ -738,7 +738,7 @@ mod tests {
         });
         assert_eq!(
             crawl_denied_notice(&sc).as_deref(),
-            Some("[crawl] 1 URL denied by local DonSeTch rules (2 rules)")
+            Some("[crawl] 1 URL excluded by the operator's local DonSeTch rules (2 rules)")
         );
     }
 
