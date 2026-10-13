@@ -45,6 +45,7 @@ fn html_server() -> String {
 
 /// A PATH that resolves `which` and nothing else: `which Xvfb` then fails,
 /// which is how the ghost tier decides Xvfb is not installed.
+#[cfg(target_os = "linux")]
 fn path_without_xvfb() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("donsetch-noxvfb-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
