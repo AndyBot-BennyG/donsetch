@@ -5,26 +5,7 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [4.7.5] - 2026-10-13
-
-### Fixed
-
-- A diagnostic whose write fails no longer kills the process. Rust's
-  stderr printing macros panic on a failed write and the shipped
-  profile is `panic = "abort"`, so an MCP client that closed its
-  stderr read end aborted the daemon with SIGABRT mid-session; the
-  ghost tier's Xvfb install hint was the line that hit it in the
-  field report (issue #364). Every diagnostic in the daemon and the
-  CLI now goes through one fallible writer that drops a failed
-  write, and a package lint (`clippy::print_stderr`) fails the gate
-  on a raw stderr print so the class cannot come back. The text, the
-  order and every diagnostic on a healthy stderr are unchanged. A CLI
-  command other than `mcp` still restores SIGPIPE's default
-  disposition, so a pipeline that closes its pipe still ends the
-  process with exit 141 the way `rg` and `curl` do: that is the shell
-  convention, not a panic.
-
-## [Unreleased]
+## [4.8.0] - 2026-10-13
 
 ### Added
 
@@ -114,6 +95,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already required; a dead seed's site header and footer links used to
   come back as a complete map. Such a seed now gets the failed-seed error.
 
+- A diagnostic whose write fails no longer kills the process. Rust's
+  stderr printing macros panic on a failed write and the shipped
+  profile is `panic = "abort"`, so an MCP client that closed its
+  stderr read end aborted the daemon with SIGABRT mid-session; the
+  ghost tier's Xvfb install hint was the line that hit it in the
+  field report (issue #364). Every diagnostic in the daemon and the
+  CLI now goes through one fallible writer that drops a failed
+  write, and a package lint (`clippy::print_stderr`) fails the gate
+  on a raw stderr print so the class cannot come back. The text, the
+  order and every diagnostic on a healthy stderr are unchanged. A CLI
+  command other than `mcp` still restores SIGPIPE's default
+  disposition, so a pipeline that closes its pipe still ends the
+  process with exit 141 the way `rg` and `curl` do: that is the shell
+  convention, not a panic.
 
 ## [4.7.4] - 2026-10-10
 
