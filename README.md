@@ -689,7 +689,7 @@ Thin adapter over the same engine the MCP server uses.
 | `donsetch screenshot <url>` | Render to PNG (`--out`) |
 | `donsetch mcp` | MCP server (stdio, or `--http --port N`) |
 | `donsetch doctor` | Health check and auto-fix (`--deep`, `--json`, `--fix`) |
-| `donsetch status` | Version, keys, proxies, cache, health overview |
+| `donsetch status` | Version, keys, proxies, cache, health overview (`--json` for scripts and agents) |
 | `donsetch keys` | BYOK providers and plugins (`add`, `list`, `default`, `export`) |
 | `donsetch proxy` | Proxy management (`add`, `list`, `check`, `test`, `import`, `export`, `remove`, `clear`, `fetch on\|off`, `crawl on\|off`) |
 | `donsetch login` | Authenticated sessions for walled sites (`--list`, `--status`, `--logout`, `--import`) |
@@ -697,6 +697,8 @@ Thin adapter over the same engine the MCP server uses.
 | `donsetch rules test <url>` | Explain what the local rules do with a URL, offline |
 | `donsetch tools` | Tool schemas as JSON, same as MCP `tools/list` |
 | `donsetch update` / `rollback` | Self-update from GitHub Releases, and revert |
+
+Every management command validates its flags: an unknown one is refused with the nearest known match and exits 1. A usage error is never a silent run. The `proxy` help and its empty-pool state carry one labelled sponsor line (Proxy-Seller); `DONSETCH_NO_SPONSOR=1` removes it, and it never appears in `--json`, `proxy export`, or any MCP result or tool definition.
 
 ## 🔀 Proxies
 

@@ -5,6 +5,59 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.10.1] - 2026-10-14
+
+### Added
+
+- `donsetch status --json`: the same overview as one JSON document on stdout
+  (version, update state, search mode, proxy count and skipped lines, cache
+  bytes, browser, health, route memory, improve counters). The human view is a
+  rendering of those fields, so the two cannot disagree, and unlike
+  `doctor --json` (whose document follows the human report) this output is the
+  whole of stdout, so `donsetch status --json | jq .version` works.
+- `donsetch -V` as the short form of `--version` (lowercase `-v` already
+  worked, the conventional uppercase form did not).
+- A sponsor line in the human `donsetch proxy` output (the help text and the
+  empty-pool state): one labelled, dim line naming Proxy-Seller, its URL and
+  promo code, removable with `DONSETCH_NO_SPONSOR=1`. Hard lines: it is never
+  a fake pool lane, and it never appears in `--json`, `proxy export`,
+  `doctor`, `status`, or any MCP tool result or tool definition.
+
+### Fixed
+
+- The management commands ignored flags they did not recognize, while the
+  clap-parsed agent tools refused them. `donsetch doctor --frobnicate` ran the
+  whole health check and exited 0, a typo like `--depp` bought a silent shallow
+  run, and `status --json`, `proxy list --json`, `keys list --json`,
+  `adapters --json` and `version --json` all printed human output. Every
+  management command now refuses an unknown flag with the offending argument,
+  the nearest known one (`tip: a similar argument exists: '--deep'`), its usage
+  line, and exit 1: the answer the tools already gave.
+- `donsetch help <command>` printed a stale second copy of the command's help
+  (the proxy copy knew nothing of `proxy fetch|crawl on|off`). Both routes now
+  print the command's own text, and a test pins them byte-for-byte.
+- `donsetch login` without a terminal launched a real browser and only then
+  reported the closed stdin. It refuses before spawning anything now, names the
+  non-interactive branches (`--list`, `--status`, `--logout`, `--import`), and
+  exits 1.
+- `donsetch help <unknown>` printed the command index and exited 0, so a typo
+  read as success. Unknown commands and unknown subcommands are usage errors
+  now (exit 1) and name the nearest match (`tip: a similar command exists:
+  'fetch'`).
+- `donsetch proxy <unknown>` printed the help and exited 0. It exits 1.
+- `donsetch proxy export` on an empty pool printed nothing at all, which is
+  indistinguishable from a failure. It explains itself on stderr and keeps
+  stdout empty for piping.
+
+### Changed
+
+- The top-level help aligns the `screenshot` row with the other columns (the
+  name column was sized for nine characters) and drops the doubled colon in its
+  header line.
+- The setting behind the sponsor line, `DONSETCH_NO_SPONSOR`, is reserved: it
+  is a behaviour switch, not a config knob, so setting it no longer prints
+  `ignoring DONSETCH_NO_SPONSOR: expected DONSETCH_<SECTION>__<KEY>`.
+
 ## [4.10.0] - 2026-10-14
 
 ### Added
