@@ -58,6 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is a behaviour switch, not a config knob, so setting it no longer prints
   `ignoring DONSETCH_NO_SPONSOR: expected DONSETCH_<SECTION>__<KEY>`.
 
+### Security
+
+- `rustls` 0.23.45 to 0.23.46, clearing four advisories published against the
+  version this crate pinned (RUSTSEC-2026-0346 through 0349: TLS secrets
+  reachable through `Debug` impls, buffered application data sent after an ECH
+  rejection, brotli certificate decompression allocating up to 1 GiB before
+  authentication, and an unauthenticated ServerHello downgrading later
+  connections). The advisory database's own fix is the patch bump.
+
 ## [4.10.0] - 2026-10-14
 
 ### Added
