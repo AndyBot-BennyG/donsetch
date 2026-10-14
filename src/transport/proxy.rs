@@ -212,15 +212,18 @@ impl Proxy {
     ///   "http://user:pass@host:port"
     ///   "user:pass@host:port"  (bare = HTTP CONNECT, backward compat)
     ///   "host:port"            (no auth, HTTP CONNECT)
+    ///
+    /// Errors are `FetchError::ProxyConfig`: a proxy reference that does not
+    /// parse is a configuration problem, never origin evidence. `http:` in
+    /// front of "bad port" read as a transport failure of the target site.
     pub fn parse(s: &str) -> Result<Self, FetchError> {
         let (scheme, rest) = match s.split_once("://") {
             Some((scheme, rest)) => match scheme.to_ascii_lowercase().as_str() {
                 "http" => (ProxyScheme::Http, rest),
                 "socks5" | "socks5h" => (ProxyScheme::Socks5, rest),
                 _ => {
-                    return Err(FetchError::Http(
-                        "proxy: unsupported scheme (supported: http://, socks5://, socks5h://)"
-                            .into(),
+                    return Err(FetchError::ProxyConfig(
+                        "unsupported scheme (supported: http://, socks5://, socks5h://)".into(),
                     ));
                 }
             },
@@ -233,8 +236,8 @@ impl Proxy {
         let (user, pass, addr) = match rest.rsplit_once('@') {
             Some((auth, addr)) => {
                 let (u, p) = auth.split_once(':').ok_or_else(|| {
-                    FetchError::Http(
-                        "proxy: bad auth (expected scheme://user:pass@host:port)".into(),
+                    FetchError::ProxyConfig(
+                        "bad auth (expected scheme://user:pass@host:port)".into(),
                     )
                 })?;
                 (u.to_string(), p.to_string(), addr)
@@ -244,7 +247,7 @@ impl Proxy {
 
         let (host, port) = addr
             .rsplit_once(':')
-            .ok_or_else(|| FetchError::Http("proxy: bad address (expected host:port)".into()))?;
+            .ok_or_else(|| FetchError::ProxyConfig("bad address (expected host:port)".into()))?;
         // rsplit_once handles IPv6 brackets too: [::1]:1080 → ("[::1]", "1080")
         let port: u16 = port
             .bytes()
@@ -252,14 +255,14 @@ impl Proxy {
             .then(|| port.parse::<u16>().ok())
             .flatten()
             .filter(|port| *port != 0)
-            .ok_or_else(|| FetchError::Http("proxy: bad port (expected 1-65535)".into()))?;
+            .ok_or_else(|| FetchError::ProxyConfig("bad port (expected 1-65535)".into()))?;
         // Strip IPv6 brackets if present.
         if host.is_empty()
             || host
                 .bytes()
                 .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
         {
-            return Err(FetchError::Http("proxy: invalid host".into()));
+            return Err(FetchError::ProxyConfig("invalid host".into()));
         }
         let bare = host
             .strip_prefix('[')
@@ -269,7 +272,7 @@ impl Proxy {
             address.to_string()
         } else {
             url::Host::parse(host)
-                .map_err(|_| FetchError::Http("proxy: invalid host".into()))?
+                .map_err(|_| FetchError::ProxyConfig("invalid host".into()))?
                 .to_string()
         };
 

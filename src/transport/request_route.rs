@@ -149,15 +149,11 @@ impl RequestRoute {
     }
 }
 
+/// A selected proxy value parses straight into the typed config error:
+/// `Proxy::parse` already reports `ProxyConfig`, so a translation here only
+/// prefixed the message a second time.
 fn parse_selected(value: &Option<String>) -> Result<Option<Proxy>, FetchError> {
-    value
-        .as_deref()
-        .map(Proxy::parse)
-        .transpose()
-        .map_err(|error| match error {
-            FetchError::Http(message) => FetchError::ProxyConfig(message),
-            other => FetchError::ProxyConfig(other.to_string()),
-        })
+    value.as_deref().map(Proxy::parse).transpose()
 }
 
 fn configured_proxy_value(scheme: &str) -> Option<String> {
