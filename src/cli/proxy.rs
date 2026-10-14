@@ -40,6 +40,65 @@ pub(crate) struct ProbeResult {
 pub async fn run(args: &[String]) {
     cli::init();
     let sub = args.get(2).map(|s| s.as_str()).unwrap_or("help");
+
+    // Each subcommand declares its own flags; an unknown one is refused
+    // (with the nearest-match tip) instead of being silently ignored.
+    const SUBS: &[&str] = &[
+        "add", "remove", "rm", "list", "ls", "check", "clear", "test", "import", "export", "fetch",
+        "crawl",
+    ];
+    let spec = match sub {
+        "add" => Some(crate::cli::args::Spec::new(
+            "proxy add",
+            "donsetch proxy add <url> [url...] [--no-check]",
+            &["--no-check", "--fast"],
+        )),
+        "remove" | "rm" => Some(crate::cli::args::Spec::new(
+            "proxy remove",
+            "donsetch proxy remove <id> [id...]",
+            &[],
+        )),
+        "list" | "ls" => Some(crate::cli::args::Spec::new(
+            "proxy list",
+            "donsetch proxy list",
+            &[],
+        )),
+        "check" => Some(crate::cli::args::Spec::new(
+            "proxy check",
+            "donsetch proxy check",
+            &[],
+        )),
+        "clear" => Some(crate::cli::args::Spec::new(
+            "proxy clear",
+            "donsetch proxy clear",
+            &[],
+        )),
+        "test" => Some(crate::cli::args::Spec::new(
+            "proxy test",
+            "donsetch proxy test <url>",
+            &[],
+        )),
+        "import" => Some(crate::cli::args::Spec::new(
+            "proxy import",
+            "donsetch proxy import <file>",
+            &[],
+        )),
+        "export" => Some(crate::cli::args::Spec::new(
+            "proxy export",
+            "donsetch proxy export [file]",
+            &[],
+        )),
+        "fetch" | "crawl" => Some(crate::cli::args::Spec::new(
+            sub,
+            "donsetch proxy <fetch|crawl> on|off",
+            &[],
+        )),
+        _ => None,
+    };
+    if let Some(spec) = spec {
+        spec.reject(&args[3..]);
+    }
+
     match sub {
         "add" => cmd_add(&args[3..]).await,
         "remove" | "rm" => cmd_remove(&args[3..]).await,
@@ -51,7 +110,18 @@ pub async fn run(args: &[String]) {
         "export" => cmd_export(&args[3..]).await,
         "fetch" => cmd_pool_toggle(args, "fetch").await,
         "crawl" => cmd_pool_toggle(args, "crawl").await,
-        _ => print_help(),
+        "help" | "-h" | "--help" => help(),
+        _ => {
+            // A usage error, not a run: this used to print the help and
+            // exit 0, which reads as success to anything that checks $?.
+            crate::diag!("donsetch proxy: unknown subcommand '{sub}'");
+            if let Some(tip) = crate::cli::args::suggest(sub, SUBS) {
+                crate::diag!("  tip: a similar subcommand exists: '{tip}'");
+            }
+            crate::diag!("");
+            help();
+            std::process::exit(1);
+        }
     }
 }
 
@@ -339,6 +409,7 @@ async fn cmd_list() {
     if proxies.is_empty() {
         println!("  No proxies configured.");
         println!("  Use `donsetch proxy add <url>` to add one.");
+        crate::cli::sponsor::print();
         println!();
         cli::print_footer();
         return;
@@ -378,6 +449,7 @@ async fn cmd_check() {
     if proxies.is_empty() {
         println!("  No proxies configured.");
         println!("  Use `donsetch proxy add <url>` to add one.");
+        crate::cli::sponsor::print();
         println!();
         cli::print_footer();
         return;
@@ -642,7 +714,13 @@ async fn cmd_export(args: &[String]) {
             cli::print_footer();
         }
         None => {
-            // Print to stdout (machine-readable, no TUI).
+            // Print to stdout (machine-readable, no TUI). An empty pool
+            // prints nothing on stdout on purpose, so the note goes to
+            // stderr: silence read as success, and `donsetch proxy
+            // export` had no way to say "there was nothing to export".
+            if proxies.is_empty() {
+                crate::diag!("donsetch proxy export: no proxies configured (nothing written)");
+            }
             for p in &proxies {
                 println!("{}", p.to_url());
             }
@@ -798,7 +876,11 @@ fn format_probe_detail(r: &ProbeResult) -> String {
     }
 }
 
-fn print_help() {
+/// Usage text, shared by `donsetch proxy --help`, `donsetch help proxy`
+/// and the bare `donsetch proxy` : one text, so the two routes cannot
+/// drift apart (the copy that used to sit in main.rs knew nothing of
+/// `proxy fetch|crawl on|off`).
+pub fn help() {
     println!("Usage: donsetch proxy <subcommand> [args]");
     println!();
     println!("Subcommands:");
@@ -837,4 +919,5 @@ fn print_help() {
     println!();
     println!("Pool use: search and crawl ride the lanes; fetch opts in (`fetch on`);");
     println!("          `crawl off` leaves crawl on your IP. Written to donsetch.toml.");
+    crate::cli::sponsor::print();
 }

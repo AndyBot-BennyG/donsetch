@@ -66,6 +66,7 @@ pub(crate) fn sandbox() -> std::path::PathBuf {
 
 mod auth_login;
 mod bypass_live;
+mod cli_surface;
 mod crawl_fresh_fetch;
 mod daemon_boot_stays_alive;
 mod egress_proxy;

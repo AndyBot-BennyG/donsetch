@@ -230,14 +230,33 @@ fn check_installation() -> CheckResult {
     }
 }
 
-pub async fn run() {
+pub async fn run(args: &[String]) {
     cli::init();
 
     // Flags: --json (structured output for agents/CI), --deep
     // (full live-probe suite), --fix (apply safe repairs after the
     // checks), --fast (default: skip slow probes). --mcp prints
     // MCP client registration blocks for any detected client.
-    let args: Vec<String> = std::env::args().skip(2).collect();
+    // --stealth / --stealth-record / --parity drive the drift
+    // scorecard. An unknown flag is refused, never ignored: a typo
+    // like `--depp` used to buy a silent shallow run.
+    cli::args::Spec::new(
+        "doctor",
+        "donsetch doctor [--deep] [--fix] [--json] [--improve] [--mcp]",
+        &[
+            "--json",
+            "--deep",
+            "--fix",
+            "--mcp",
+            "--improve",
+            "--fast",
+            "--stealth",
+            "--stealth-record",
+            "--parity",
+        ],
+    )
+    .reject(&args[2..]);
+    let args: Vec<String> = args[2..].to_vec();
     let json = args.iter().any(|a| a == "--json");
     let deep = args.iter().any(|a| a == "--deep");
     let fix = args.iter().any(|a| a == "--fix");

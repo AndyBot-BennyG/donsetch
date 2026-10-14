@@ -17,7 +17,8 @@ use crate::DISPLAY_NAME;
 use crate::cli;
 
 #[allow(clippy::needless_borrows_for_generic_args)]
-pub fn run() {
+pub fn run(args: &[String]) {
+    crate::cli::args::Spec::new("rollback", "donsetch rollback", &[]).reject(&args[2..]);
     cli::init();
     cli::print_title(&format!("{DISPLAY_NAME} Rollback"));
 

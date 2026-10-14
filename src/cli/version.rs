@@ -13,7 +13,8 @@ use std::time::Duration;
 
 const REPO: &str = "dondai44423/donsetch";
 
-pub async fn run() {
+pub async fn run(args: &[String]) {
+    crate::cli::args::Spec::new("version", "donsetch version", &[]).reject(&args[2..]);
     crate::cli::init();
 
     let current = env!("CARGO_PKG_VERSION");

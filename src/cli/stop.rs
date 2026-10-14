@@ -2,7 +2,8 @@
 //! stale lock files. Use after a crash or when Chrome processes
 //! from a previous session are still resident.
 
-pub fn run() {
+pub fn run(args: &[String]) {
+    crate::cli::args::Spec::new("stop", "donsetch stop", &[]).reject(&args[2..]);
     let profile = crate::ghost::profile_dir();
 
     #[cfg(unix)]

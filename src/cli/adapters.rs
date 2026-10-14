@@ -8,7 +8,8 @@
 use crate::adapters;
 use crate::adapters::plugins;
 
-pub fn run() {
+pub fn run(args: &[String]) {
+    crate::cli::args::Spec::new("adapters", "donsetch adapters", &[]).reject(&args[2..]);
     if !crate::config::cfg().fetch.adapters {
         println!("Adapter registry is OFF (fetch.adapters is false).");
         println!("Everything below stays loaded in memory but never fires.");

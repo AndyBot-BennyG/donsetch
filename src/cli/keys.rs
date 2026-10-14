@@ -38,6 +38,29 @@ fn parse_provider(input: &str) -> String {
 pub async fn run(args: &[String]) {
     let sub = args.get(2).map(|s| s.as_str()).unwrap_or("help");
 
+    // `keys add` is the only subcommand with flags (`keys add plugin <name>
+    // --cmd ... --timeout N --test`); everything else takes positionals only.
+    // Unknown flags used to be ignored: `keys list --json` printed the human
+    // table and exited 0.
+    let spec = match sub {
+        "add" => Some(crate::cli::args::Spec::new(
+            "keys add",
+            "donsetch keys add <provider> <key>",
+            &["--cmd", "-c", "--timeout", "-t", "--test"],
+        )),
+        "remove" | "rm" | "list" | "ls" | "default" | "reset" | "export" | "import" | "clear" => {
+            Some(crate::cli::args::Spec::new(
+                sub,
+                "donsetch keys <subcommand>",
+                &[],
+            ))
+        }
+        _ => None,
+    };
+    if let Some(spec) = spec {
+        spec.reject(&args[3..]);
+    }
+
     match sub {
         "add" => cmd_add(args).await,
         "remove" | "rm" => cmd_remove(args),
@@ -47,10 +70,10 @@ pub async fn run(args: &[String]) {
         "export" => cmd_export(args),
         "import" => cmd_import(args),
         "clear" => cmd_clear(),
-        "help" | "-h" | "--help" => print_help(),
+        "help" | "-h" | "--help" => help(),
         _ => {
             crate::diag!("{} unknown subcommand: {sub}", red("\u{2717}"));
-            print_help();
+            help();
             std::process::exit(1);
         }
     }
@@ -809,7 +832,9 @@ fn cmd_clear() {
     );
 }
 
-fn print_help() {
+/// Usage text, shared by `donsetch keys --help`, `donsetch help keys`
+/// and the bare `donsetch keys`.
+pub fn help() {
     println!(
         "{}",
         bold("donsetch keys : BYOK search provider management")

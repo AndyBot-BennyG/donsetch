@@ -11,7 +11,7 @@
 //! - Cookie values live only in the vault; the registry
 //!   (auth-state.json) is masked metadata.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use tokio::io::AsyncBufReadExt;
 
@@ -19,6 +19,15 @@ use crate::auth::{self, AuthRegistry};
 use crate::ghost::cache::CookieRecord;
 
 pub async fn run(args: &[String]) -> Result<(), String> {
+    // Validation first: an unknown flag must not open a browser.
+    crate::cli::args::Spec::new(
+        "login",
+        "donsetch login [domain] [--list|--status D|--logout D|--import F]",
+        &["--list", "--fresh", "--no-probe", "--yes", "-y"],
+    )
+    .with_valued(&["--logout", "--status", "--import"])
+    .reject(&args[2..]);
+
     // ── subcommand parse (manual, matching keys.rs style) ──
     let mut site: Option<String> = None;
     let mut action_flags: Vec<&str> = Vec::new();
@@ -62,12 +71,12 @@ pub async fn run(args: &[String]) -> Result<(), String> {
             "--yes" | "-y" => yes = true,
             "--fresh" => fresh = true,
             "--help" | "-h" | "help" => {
-                print_help();
+                help();
                 return Ok(());
             }
             other if other.starts_with("--") => {
                 crate::diag!("donsetch login: unknown flag {other}\n");
-                print_help();
+                help();
                 return Err("invalid login arguments".into());
             }
             _ => {
@@ -75,7 +84,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
                     site = Some(a.clone());
                 } else {
                     crate::diag!("donsetch login: unexpected argument '{a}'\n");
-                    print_help();
+                    help();
                     return Err("invalid login arguments".into());
                 }
             }
@@ -91,7 +100,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         "status" => {
             let Some(s) = site else {
                 crate::diag!("donsetch login --status needs a domain");
-                print_help();
+                help();
                 return Err("invalid login arguments".into());
             };
             print_status(&s);
@@ -99,7 +108,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         "logout" => {
             let Some(s) = site else {
                 crate::diag!("donsetch login --logout needs a domain");
-                print_help();
+                help();
                 return Err("invalid login arguments".into());
             };
             logout(&s, yes)?;
@@ -107,7 +116,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         "import" => {
             let Some(f) = import_file else {
                 crate::diag!("donsetch login --import needs a cookies.txt file");
-                print_help();
+                help();
                 return Err("invalid login arguments".into());
             };
             import(&f, site.as_deref(), !no_probe)?;
@@ -119,7 +128,8 @@ pub async fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn print_help() {
+/// Usage text, shared by `donsetch login --help` and `donsetch help login`.
+pub fn help() {
     println!("Usage:");
     println!("  donsetch login [domain]          Interactive: open a browser, you sign in,");
     println!("                                   press Enter here when done. The session is");
@@ -146,6 +156,18 @@ fn print_help() {
 // ── interactive flow ─────────────────────────────────────────
 
 async fn interactive(site: Option<&str>, fresh: bool, probe: bool) -> Result<(), String> {
+    // The other branches of `login` (`--list`, `--status`, `--logout`,
+    // `--import`) are non-interactive on purpose; only this one needs a
+    // human. Without a terminal it used to launch a real browser first and
+    // discover the closed stdin afterwards, leaving nothing stored.
+    if !std::io::stdin().is_terminal() {
+        return Err(
+            "needs a terminal: stdin is not a TTY, so there is nobody to press Enter \
+             (nothing was stored). Non-interactive use: --list, --status D, --logout D, \
+             --import FILE"
+                .into(),
+        );
+    }
     if crate::config::cfg().state.no_disk_state {
         return Err("login requires disk state; state.no_disk_state is enabled".into());
     }

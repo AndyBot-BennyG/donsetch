@@ -5,12 +5,14 @@
 //! terminal processing enabled on Windows 10+).
 
 pub mod adapters;
+pub mod args;
 pub mod doctor;
 pub mod keys;
 pub mod login;
 pub mod proxy;
 pub mod rollback;
 pub mod rules;
+pub mod sponsor;
 pub mod status;
 pub mod stop;
 pub mod tool;

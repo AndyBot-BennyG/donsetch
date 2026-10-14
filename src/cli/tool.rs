@@ -583,49 +583,50 @@ fn machine_meta(result: &Value, sc: &Value) -> Value {
 
 /// Print top-level help (when no subcommand given or --help).
 pub fn print_top_help() {
-    println!("{DISPLAY_NAME} : web research for AI agents: fetch, search, crawl");
+    println!("{DISPLAY_NAME} · web research for AI agents: fetch, search, crawl");
     println!();
     println!("USAGE: donsetch <command> [args]");
     println!();
     println!("AGENT TOOLS:");
     for tool in spec::TOOLS {
-        println!("  {:8} {}", tool.cli_cmd, tool.summary);
+        println!("  {:10} {}", tool.cli_cmd, tool.summary);
     }
     println!();
     println!("DISCOVERY:");
     println!(
-        "  {:8} Print tool schemas as JSON (same as MCP tools/list)",
+        "  {:10} Print tool schemas as JSON (same as MCP tools/list)",
         "tools"
     );
     println!();
     println!("MANAGEMENT:");
-    println!("  {:8} Start MCP server (JSON-RPC on stdio)", "mcp");
-    println!("  {:8} Manage BYOK search provider keys", "keys");
+    println!("  {:10} Start MCP server (JSON-RPC on stdio)", "mcp");
+    println!("  {:10} Manage BYOK search provider keys", "keys");
     println!(
-        "  {:8} Sign into a site: later fetches replay your session",
+        "  {:10} Sign into a site: later fetches replay your session",
         "login"
     );
-    println!("  {:8} Manage proxy configuration", "proxy");
+    println!("  {:10} Manage proxy configuration", "proxy");
     println!(
-        "  {:8} Explain what the local rules do with a URL (rules test <url>)",
+        "  {:10} Explain what the local rules do with a URL (rules test <url>)",
         "rules"
     );
-    println!("  {:8} Quick status overview", "status");
+    println!("  {:10} Quick status overview", "status");
     println!(
-        "  {:8} Show the adapter registry + user plugins",
+        "  {:10} Show the adapter registry + user plugins",
         "adapters"
     );
     println!(
-        "  {:8} Kill orphaned Chrome instances + clean stale locks",
+        "  {:10} Kill orphaned Chrome instances + clean stale locks",
         "stop"
     );
-    println!("  {:8} Health check with auto-fix", "doctor");
-    println!("  {:8} Self-update from GitHub Releases", "update");
-    println!("  {:8} Revert to previous version", "rollback");
-    println!("  {:8} Show version and build info", "version");
+    println!("  {:10} Health check with auto-fix", "doctor");
+    println!("  {:10} Self-update from GitHub Releases", "update");
+    println!("  {:10} Revert to previous version", "rollback");
+    println!("  {:10} Show version and build info", "version");
     println!();
     println!("Run `donsetch <command> --help` for parameters.");
     println!("Run `donsetch help <command>` for detailed help on a command.");
+    println!("Run `donsetch -V` for the version block.");
     println!();
     println!(
         "Exit codes: 0 success · 1 permanent error · 2 transient (retry) · 3 walled (try different source)"

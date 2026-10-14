@@ -2087,6 +2087,11 @@ const RESERVED_VARS: &[&str] = &[
     "DONSETCH_PLUGIN",
     "DONSETCH_DEBUG",
     "DONSETCH_NO_UPDATE_CHECK",
+    // The CLI sponsor line's opt-out (cli::sponsor). A plain on/off
+    // switch, not a knob: it changes one cosmetic line in human-facing
+    // `donsetch proxy` output and nothing else, so it stays out of the
+    // config schema the way the other behaviour switches do.
+    "DONSETCH_NO_SPONSOR",
     "DONSETCH_INSTALL_TAG",
     "DONSETCH_RELEASES_BASE",
     "DONSETCH_SKIP_DOWNLOAD",

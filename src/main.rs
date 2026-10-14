@@ -92,6 +92,29 @@ fn config_cli(args: &[String]) {
 /// are used.
 const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
+/// Every top-level command, for the suggestion on a typo.
+const KNOWN_COMMANDS: &[&str] = &[
+    "fetch",
+    "search",
+    "crawl",
+    "screenshot",
+    "tools",
+    "mcp",
+    "keys",
+    "login",
+    "proxy",
+    "rules",
+    "status",
+    "adapters",
+    "stop",
+    "doctor",
+    "update",
+    "rollback",
+    "version",
+    "config",
+    "help",
+];
+
 fn main() {
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -159,7 +182,7 @@ async fn run() {
     // version read no config at all.
     if !matches!(
         cmd,
-        "config" | "help" | "--help" | "-h" | "version" | "-v" | "--version"
+        "config" | "help" | "--help" | "-h" | "version" | "-v" | "-V" | "--version"
     ) {
         load_and_install_config(&args);
     }
@@ -172,13 +195,30 @@ async fn run() {
         }
 
         // ── Discovery ──
-        "tools" => cli::tool::print_tools_json(),
+        "tools" => {
+            cli::args::Spec::new("tools", "donsetch tools [--json]", &["--json"])
+                .reject(&args[2..]);
+            cli::tool::print_tools_json()
+        }
 
         // ── Management ──
         "config" => {
+            cli::args::Spec::new(
+                "config",
+                "donsetch config show [--markdown] [--legacy]",
+                &["--markdown", "--legacy", "show"],
+            )
+            .reject(&args[2..]);
             config_cli(&args);
         }
         "mcp" => {
+            cli::args::Spec::new(
+                "mcp",
+                "donsetch mcp [--http] [--host HOST] [--port PORT] [--supervised]",
+                &["--http", "--supervised"],
+            )
+            .with_valued(&["--host", "--port"])
+            .reject(&args[2..]);
             donsetch::diag!(
                 "[mcp] donsetch {} · {}",
                 env!("CARGO_PKG_VERSION"),
@@ -243,16 +283,16 @@ async fn run() {
             }
         }
         "proxy" => cli::proxy::run(&args).await,
-        "status" => cli::status::run().await,
+        "status" => cli::status::run(&args).await,
         "adapters" => match args.get(2).map(String::as_str) {
             Some("--help" | "-h") => cli::adapters::help(),
-            _ => cli::adapters::run(),
+            _ => cli::adapters::run(&args),
         },
-        "stop" => cli::stop::run(),
-        "doctor" | "--doctor" => cli::doctor::run().await,
-        "update" | "-u" | "--update" => cli::update::run().await,
-        "rollback" | "--rollback" => cli::rollback::run(),
-        "version" | "-v" | "--version" => cli::version::run().await,
+        "stop" => cli::stop::run(&args),
+        "doctor" | "--doctor" => cli::doctor::run(&args).await,
+        "update" | "-u" | "--update" => cli::update::run(&args).await,
+        "rollback" | "--rollback" => cli::rollback::run(&args),
+        "version" | "-v" | "-V" | "--version" => cli::version::run(&args).await,
 
         // ── Dev/internal (hidden from --help) ──
         "dev" => dev::dispatch(&args[2..]).await,
@@ -269,11 +309,7 @@ async fn run() {
                 cli::tool::print_top_help();
             }
         }
-        _ => {
-            donsetch::diag!("donsetch: unknown command '{cmd}'\n");
-            cli::tool::print_top_help();
-            std::process::exit(1);
-        }
+        _ => cli::args::unknown_command(cmd, KNOWN_COMMANDS),
     }
 }
 
@@ -288,50 +324,17 @@ async fn route_help(cmd: &str) {
             let help_args = vec!["--help".to_string()];
             let _ = cli::tool::run(cmd, &help_args).await;
         }
-        "keys" => {
-            cli::keys::run(&["donsetch".into(), "keys".into(), "help".into()]).await;
-        }
+        "keys" => cli::keys::help(),
         "adapters" => cli::adapters::help(),
         "rules" => cli::rules::help(),
-        "proxy" => {
-            // proxy::run is async, but print_help is sync.
-            // Just call the help directly.
-            println!("Usage: donsetch proxy <subcommand> [args]");
-            println!();
-            println!("Subcommands:");
-            println!(
-                "  add <url> [url...] [--no-check]  Add proxies (validated, optionally probed)"
-            );
-            println!("  remove <id> [id...]              Remove proxies by index or host:port");
-            println!("  list                             Show all configured proxies");
-            println!(
-                "  check                            Probe all proxies (connectivity + exit IP)"
-            );
-            println!("  clear                            Remove all proxies");
-            println!("  test <url>                       Test a proxy without adding it");
-            println!("  import <file>                    Import from file (one URL per line)");
-            println!("  export [file]                    Export to file (default: stdout)");
-            println!();
-            println!("Proxy URL format:");
-            println!("  socks5://user:pass@host:port     SOCKS5 with auth (remote DNS, no leak)");
-            println!("  socks5://host:port               SOCKS5 without auth");
-            println!("  http://user:pass@host:port       HTTP CONNECT with auth");
-            println!("  http://host:port                 HTTP CONNECT without auth");
-            println!("  user:pass@host:port              Bare = HTTP CONNECT (backward compat)");
-            println!("  host:port                        No auth, HTTP CONNECT");
-            println!();
-            println!("Config: cache_dir/proxies.txt (one URL per line, # comments)");
-            println!(
-                "Env:   DONSEEK_PROXIES (comma-separated, overrides config for same host:port)"
-            );
-        }
-        "status" => {
-            println!("Usage: donsetch status");
-            println!();
-            println!("  Shows a quick overview: version, search config, proxies, cache, health.");
-            println!("  No probes, no browser launch : fast.");
-            println!("  For full diagnostics, run `donsetch doctor`.");
-        }
+        "status" => cli::status::help(),
+        // `proxy`, `keys` and `login` carry their own text; routing here
+        // means `donsetch help proxy` and `donsetch proxy --help` cannot
+        // drift apart again (the copy that used to live here had gone
+        // stale: it knew nothing of `proxy fetch|crawl on|off`).
+        "proxy" => cli::proxy::help(),
+        "login" => cli::login::help(),
+        "--help" | "-h" => cli::tool::print_top_help(),
         "config" => {
             println!("Usage: donsetch config show [--markdown] [--legacy]");
             println!();
@@ -407,23 +410,11 @@ async fn route_help(cmd: &str) {
             println!("Legacy names (DONSETCH_TRANSPORT, DONSETCH_HTTP_*, ...) still");
             println!("work and map to the keys above; `donsetch doctor` lists them.");
         }
-        "login" => {
-            println!("Usage: donsetch login [domain]");
-            println!();
-            println!("  Opens a real browser for you to sign into a site. Press Enter");
-            println!("  when done: the session is stored (vault, 0600) and every later");
-            println!("  fetch of that domain replays it, tier 1 and tier 2 alike.");
-            println!();
-            println!("  donsetch login --list      Show stored sessions (masked).");
-            println!("  donsetch login --status D  Detail one domain.");
-            println!("  donsetch login --logout D  Forget a domain.");
-            println!("  donsetch login --import F  Import a Netscape cookies.txt export.");
-            println!("  Credentials never enter donsetch: you type them into the browser.");
-        }
         "tools" => {
-            println!("Usage: donsetch tools");
+            println!("Usage: donsetch tools [--json]");
             println!();
             println!("  Prints the tool schemas as JSON (same as MCP tools/list).");
+            println!("  --json is accepted and redundant: this output is always JSON.");
         }
         "stop" => {
             println!("Usage: donsetch stop");
@@ -432,9 +423,7 @@ async fn route_help(cmd: &str) {
             println!("  temp profiles. Run after a hard interrupt; harmless when there is");
             println!("  nothing to clean.");
         }
-        _ => {
-            cli::tool::print_top_help();
-        }
+        _ => cli::args::unknown_command(cmd, KNOWN_COMMANDS),
     }
 }
 

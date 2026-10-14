@@ -27,7 +27,8 @@ use crate::profile::BrowserProfile;
 
 const REPO: &str = "dondai44423/donsetch";
 
-pub async fn run() {
+pub async fn run(args: &[String]) {
+    crate::cli::args::Spec::new("update", "donsetch update", &[]).reject(&args[2..]);
     cli::init();
     cli::print_title(&format!("{DISPLAY_NAME} Update"));
 

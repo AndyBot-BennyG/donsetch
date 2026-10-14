@@ -24,7 +24,10 @@ walled PDFs; this URL may come back as Chrome's PDF viewer, not the document";
 /// or URL error.
 pub fn run(args: &[String]) {
     match args.get(2).map(String::as_str) {
-        Some("test") => {}
+        Some("test") => {
+            crate::cli::args::Spec::new("rules test", "donsetch rules test <url>", &[])
+                .reject(&args[3..]);
+        }
         Some("help" | "--help" | "-h") => {
             help();
             return;
