@@ -117,6 +117,7 @@ pub(super) fn make_ghost_hook(
             }
             tokio::time::timeout_at(deadline.into(), async move {
                 let url = request.url;
+                let render_state = GhostState::load();
                 let g_host = crate::search::rank::host_of(&url);
                 let (mut wire, persona) = {
                     let s = state.lock().await;
@@ -180,10 +181,12 @@ pub(super) fn make_ghost_hook(
                     fetcher.import_vault_cookies(&cookies).await;
                     crate::ghost::cache::store_session_cookies(&cookies);
                 }
-                state
-                    .lock()
-                    .await
-                    .record_render_document(&page.document, &page.html, &context);
+                state.lock().await.record_render_document_session(
+                    &page.document,
+                    &page.html,
+                    &context,
+                    &render_state.render_stamp(&page.document.url),
+                );
                 Ok(crate::crawl::GhostRender {
                     html: page.html,
                     document: page.document,

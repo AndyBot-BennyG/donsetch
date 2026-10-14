@@ -140,7 +140,7 @@ fn walk<'a>(
     match name {
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
             let level = name.as_bytes()[1] - b'0';
-            let text = inline::plain(el);
+            let text = inline::markdown(el, base, opts).0;
             if !text.is_empty() {
                 while headings.last().is_some_and(|(l, _)| *l >= level) {
                     headings.pop();
@@ -211,7 +211,7 @@ fn walk<'a>(
                     }
                     walk(child_el, base, opts, headings, out, depth + 1);
                 }
-            } else if let Some(t) = table_block(el, headings, opts.selector.is_some()) {
+            } else if let Some(t) = table_block(el, headings, opts.selector.is_some(), base, opts) {
                 push_block(t, out);
             }
         }
@@ -395,7 +395,7 @@ fn loose_text(el: ElementRef<'_>, base: &str, opts: &super::ExtractOptions) -> (
                 }
                 if INLINE_TAGS.contains(&n) && !crate::extract::junk::skip(c) && !contains_block(c)
                 {
-                    let (md, _) = inline::markdown(c, base, opts);
+                    let (md, _) = inline::element_markdown(c, base, opts);
                     // Newlines inside inline content are real line breaks
                     // (the br sentinel survives the inline render). Trim
                     // horizontal whitespace but keep the newlines: a
@@ -641,6 +641,8 @@ fn table_block(
     el: ElementRef<'_>,
     headings: &[(u8, String)],
     explicit_scope: bool,
+    base: &str,
+    opts: &super::ExtractOptions,
 ) -> Option<Block> {
     let mut headers = Vec::new();
     let mut rows = Vec::new();
@@ -655,7 +657,7 @@ fn table_block(
         let cells: Vec<(bool, String)> = own_cells(tr)
             .map(|c| {
                 let is_th = c.value().name() == "th";
-                let t = inline::plain(c).replace('|', "\\|"); // unescaped pipes break md tables
+                let t = inline::markdown(c, base, opts).0.replace('|', "\\|"); // unescaped pipes break md tables
                 (is_th, t)
             })
             .collect();

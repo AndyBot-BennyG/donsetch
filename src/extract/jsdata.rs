@@ -301,6 +301,7 @@ pub fn extract(html: &str, url: &str, opts: &ExtractOptions) -> Option<Extracted
             url,
             opts,
             opts.max_chars.unwrap_or(16_000).max(200),
+            None,
         )
         .ok();
     }

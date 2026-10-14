@@ -145,6 +145,10 @@ pub struct Ghost {
     /// back into the vault by this browser's reap — the browser
     /// predates the clear and only holds a dead session.
     pub launched_epoch: u64,
+    session_stamp: String,
+    auth_revision: String,
+    applied_auth_epoch: u64,
+    session_host: Option<String>,
     /// Holds an flock on the shared profile dir. Kept alive for
     /// the Ghost's lifetime so concurrent donsetch processes see
     /// the lock and fall back to a temp profile instead of
@@ -1634,6 +1638,10 @@ impl Ghost {
             frozen: false,
             last_used: Instant::now(),
             launched_epoch: crate::ghost::cache::disk_epoch_now(),
+            session_stamp: String::new(),
+            auth_revision: String::new(),
+            applied_auth_epoch: 0,
+            session_host: None,
             profile_lock,
             temp_profile,
             fetch_guard: Some(fetch_guard),
@@ -2153,6 +2161,157 @@ impl Ghost {
                 .await;
             }
         }
+    }
+
+    /// Refresh an acquired browser from one vault snapshot before navigation.
+    /// Explicit operator sessions also replay into temporary profiles; automatic
+    /// browser harvests remain restricted to the canonical profile.
+    pub(crate) async fn refresh_session_vault(
+        &mut self,
+        host: Option<&str>,
+    ) -> Result<(), FetchError> {
+        let Some(stamp) = cache::disk_session_stamp() else {
+            return Ok(());
+        };
+        if self.session_stamp == stamp && self.session_host.as_deref() == host {
+            return Ok(());
+        }
+        let state = cache::GhostState::load();
+        let consent_changed = self.auth_revision != state.auth_revision;
+        if consent_changed || self.session_stamp.is_empty() {
+            let cleared: Vec<_> = state
+                .profiles
+                .iter()
+                .filter(|(_, p)| p.session_cleared_epoch > self.applied_auth_epoch)
+                .map(|(domain, _)| domain.as_str())
+                .collect();
+            if !cleared.is_empty() {
+                let cookies = self.cookies().await?;
+                for cookie in cookies {
+                    if cleared.iter().any(|domain| {
+                        crate::auth::cookie_belongs_to(
+                            domain,
+                            cookie.domain.trim_start_matches('.'),
+                        )
+                    }) {
+                        let mut value = Self::session_cookie_params(&cookie);
+                        value["expires"] = json!(1);
+                        self.cdp
+                            .call(None, "Storage.setCookies", json!({"cookies": [value]}))
+                            .await?;
+                    }
+                }
+            }
+        }
+        let selected: Vec<_> = state
+            .profiles
+            .values()
+            .filter(|p| self.temp_profile.is_none() || p.session_explicit)
+            .flat_map(|p| {
+                p.session_cookies
+                    .iter()
+                    .map(move |c| (c, p.session_explicit))
+            })
+            .filter(|(c, _)| cache::is_session_usable(c))
+            .collect();
+        let batch: Vec<_> = selected
+            .iter()
+            .map(|(c, _)| Self::session_cookie_params(c))
+            .collect();
+        if !batch.is_empty()
+            && self
+                .cdp
+                .call(None, "Storage.setCookies", json!({"cookies": batch}))
+                .await
+                .is_err()
+        {
+            for (c, explicit) in &selected {
+                let result = self
+                    .cdp
+                    .call(
+                        None,
+                        "Storage.setCookies",
+                        json!({"cookies": [Self::session_cookie_params(c)]}),
+                    )
+                    .await;
+                if result.is_err()
+                    && *explicit
+                    && host.is_some_and(|h| Self::session_cookie_applies(c, h))
+                {
+                    return Err(FetchError::ghost(
+                        "explicit login cookie could not be restored",
+                    ));
+                }
+            }
+        }
+        // A successful RPC can silently reject a malformed cookie. Confirm only
+        // operator-owned cookies applicable to this destination, without exposing values.
+        let expected: Vec<_> = selected
+            .iter()
+            .filter(|(c, explicit)| {
+                *explicit && host.is_some_and(|h| Self::session_cookie_applies(c, h))
+            })
+            .collect();
+        if !expected.is_empty() {
+            let actual = self.cookies().await?;
+            for (c, _) in expected {
+                if !actual.iter().any(|a| {
+                    a.name == c.name
+                        && a.domain.trim_start_matches('.') == c.domain.trim_start_matches('.')
+                        && a.path == (if c.path.is_empty() { "/" } else { &c.path })
+                        && a.value == c.value
+                }) {
+                    return Err(FetchError::ghost(
+                        "explicit login cookie was not retained by the browser",
+                    ));
+                }
+            }
+        }
+        if consent_changed || self.session_stamp.is_empty() {
+            self.launched_epoch = state.vault_epoch;
+            self.applied_auth_epoch = state.vault_epoch;
+        }
+        self.auth_revision = state.auth_revision.clone();
+        self.session_stamp = state.session_stamp();
+        self.session_host = host.map(str::to_owned);
+        Ok(())
+    }
+
+    fn session_cookie_applies(c: &cache::CookieRecord, host: &str) -> bool {
+        let domain = c.domain.trim_start_matches('.').trim_matches(['[', ']']);
+        let host = host.trim_matches(['[', ']']);
+        host.eq_ignore_ascii_case(domain)
+            || (c.domain.starts_with('.')
+                && host
+                    .to_ascii_lowercase()
+                    .ends_with(&format!(".{}", domain.to_ascii_lowercase())))
+    }
+
+    fn session_cookie_params(c: &cache::CookieRecord) -> Value {
+        let mut value = json!({
+            "name": c.name, "value": c.value,
+            "path": if c.path.is_empty() { "/" } else { &c.path },
+            "secure": c.secure, "httpOnly": c.http_only,
+            "sameSite": if c.same_site.is_empty() { "Lax" } else { &c.same_site },
+        });
+        if c.domain.starts_with('.') {
+            value["domain"] = json!(c.domain);
+        } else {
+            let host = c.domain.trim_matches(['[', ']']);
+            let host = if host.contains(':') {
+                format!("[{host}]")
+            } else {
+                host.to_string()
+            };
+            value["url"] = json!(format!(
+                "{}://{host}/",
+                if c.secure { "https" } else { "http" }
+            ));
+        }
+        if let Some(expires) = c.expires_at {
+            value["expires"] = json!(expires);
+        }
+        value
     }
 
     /// `Page.captureScreenshot` bytes (base64), with the window

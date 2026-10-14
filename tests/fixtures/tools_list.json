@@ -215,7 +215,7 @@
             "type": "boolean"
           },
           "deadline_s": {
-            "description": "Hard crawl deadline in seconds (default 120, range 5-600). Partial results return after.",
+            "description": "Hard crawl deadline in seconds (default 120, range 1-600). Partial results return after.",
             "type": "integer"
           },
           "exclude_paths": {
@@ -236,6 +236,10 @@
             },
             "type": "array"
           },
+          "map_limit": {
+            "description": "Max URLs returned in the inventory (default 120, range 1-50000). A capped inventory is incomplete; narrow focus/include_paths for large sites.",
+            "type": "integer"
+          },
           "max_depth": {
             "description": "Max link depth from seed (default 2). 0 = seed only.",
             "type": "integer"
@@ -245,7 +249,7 @@
             "type": "integer"
           },
           "max_total_chars": {
-            "description": "Total extracted-char budget across all pages (default 60000, range 4000-500000).",
+            "description": "Total extracted-char budget across all pages (default 60000, range 1-500000).",
             "type": "integer"
           },
           "mode": {
@@ -258,7 +262,7 @@
             "type": "string"
           },
           "per_page_max": {
-            "description": "Max markdown chars per page (default 8000, range 400-40000).",
+            "description": "Max markdown chars per page (default 8000, range 1-40000).",
             "type": "integer"
           },
           "respect_robots": {
@@ -274,7 +278,7 @@
             "type": "boolean"
           },
           "since_last": {
-            "description": "Return only pages new or changed since the last crawl of this site (a site-wide baseline; web_fetch's since_last tracks per URL). Use for monitoring or a repeated crawl, not a first visit.",
+            "description": "Re-fetch pages and return only new or changed source fingerprints. Prior crawls or fetches supply per-URL baselines. Saves output, not verification requests; use for repeated reads.",
             "type": "boolean"
           },
           "url": {

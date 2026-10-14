@@ -518,6 +518,18 @@ pub async fn discover(
     origin: &str,
     cap: usize,
 ) -> (Robots, Vec<SitemapEntry>) {
+    let result = discover_inventory(fetch, origin, cap).await;
+    (result.robots, result.entries)
+}
+
+pub struct Discovery {
+    pub robots: Robots,
+    pub entries: Vec<SitemapEntry>,
+    /// Exhausted the published sitemap inventory without hitting a guard.
+    pub complete: bool,
+}
+
+pub async fn discover_inventory(fetch: &PageFetcher, origin: &str, cap: usize) -> Discovery {
     let robots = fetch_robots(fetch, origin).await;
 
     // Sitemap candidates: robots directives first.
@@ -535,10 +547,18 @@ pub async fn discover(
         ]);
     }
 
+    let conventional: std::collections::HashSet<String> = if robots.sitemaps.is_empty() {
+        queue.iter().cloned().collect()
+    } else {
+        Default::default()
+    };
     let mut entries = Vec::new();
     let mut fetched = 0usize;
     let mut visited = std::collections::HashSet::new();
     let mut first = true;
+    let mut parsed = false;
+    let mut complete = true;
+    let declared = !robots.sitemaps.is_empty();
     while !queue.is_empty() && entries.len() < cap && fetched < 32 {
         queue.retain(|loc| !visited.contains(loc));
         if queue.is_empty() {
@@ -554,7 +574,11 @@ pub async fn discover(
             visited.insert(loc.clone());
             fetched += 1;
             if let Some(text) = fetch_sitemap_text(fetch, &loc).await {
-                absorb(text, &mut queue, &mut entries);
+                parsed = true;
+                complete &= absorb(text, &mut queue, &mut entries, cap);
+                queue.retain(|loc| !conventional.contains(loc));
+            } else if declared {
+                complete = false;
             }
             continue;
         }
@@ -572,16 +596,27 @@ pub async fn discover(
         fetched += wave.len();
         let futs = wave.iter().map(|loc| fetch_sitemap_text(fetch, loc));
         let texts = futures_util::future::join_all(futs).await;
-        for text in texts {
+        for (loc, text) in wave.iter().zip(texts) {
             if entries.len() >= cap {
                 break;
             }
             if let Some(text) = text {
-                absorb(text, &mut queue, &mut entries);
+                parsed = true;
+                complete &= absorb(text, &mut queue, &mut entries, cap);
+                queue.retain(|loc| !conventional.contains(loc));
+            } else if declared || !conventional.contains(loc) {
+                complete = false;
             }
         }
     }
-    (robots, entries)
+    queue.retain(|loc| !visited.contains(loc));
+    complete &= parsed && queue.is_empty() && entries.len() < cap;
+    entries.truncate(cap);
+    Discovery {
+        robots,
+        entries,
+        complete,
+    }
 }
 
 /// Fetch one sitemap candidate and decode it to text.
@@ -592,20 +627,34 @@ async fn fetch_sitemap_text(fetch: &PageFetcher, loc: &str) -> Option<String> {
         return None;
     }
     let body = maybe_gunzip(&page.body);
-    String::from_utf8(body).ok()
+    String::from_utf8(body).ok().filter(|text| {
+        let t = text.trim_start();
+        t.contains("<urlset")
+            || t.contains("<sitemapindex")
+            || t.starts_with("http://")
+            || t.starts_with("https://")
+    })
 }
 
 /// Parse one sitemap body: child indexes go back to the queue,
 /// page entries join the map.
-fn absorb(text: String, queue: &mut Vec<String>, entries: &mut Vec<SitemapEntry>) {
+fn absorb(
+    text: String,
+    queue: &mut Vec<String>,
+    entries: &mut Vec<SitemapEntry>,
+    cap: usize,
+) -> bool {
+    let mut complete = true;
     let mut here = Vec::new();
     if text.trim_start().starts_with("<") {
         // XML sitemap.
-        parse_sitemap(&text, &mut here, 10_000);
+        parse_sitemap(&text, &mut here, cap.saturating_add(129));
+        complete &= here.len() < cap.saturating_add(129);
+        complete &= text.contains("</urlset>") || text.contains("</sitemapindex>");
     } else {
         // Plain-text sitemap: one URL per line (doc.rust-lang
         // publishes sitemap.txt).
-        for line in text.lines().take(10_000) {
+        for line in text.lines().take(cap.saturating_add(1)) {
             let u = line.trim();
             if u.starts_with("http") && u.len() <= MAX_LOC_LEN {
                 here.push(SitemapEntry {
@@ -622,11 +671,18 @@ fn absorb(text: String, queue: &mut Vec<String>, entries: &mut Vec<SitemapEntry>
         if e.is_index {
             if queue.len() < 128 {
                 queue.push(e.loc);
+            } else {
+                complete = false;
             }
         } else {
-            entries.push(e);
+            if entries.len() < cap {
+                entries.push(e);
+            } else {
+                complete = false;
+            }
         }
     }
+    complete
 }
 
 #[cfg(test)]
@@ -1078,6 +1134,7 @@ mod tests {
             format!("https://ex.com/{long}\nhttps://ex.com/a\n"),
             &mut queue,
             &mut entries,
+            100_000,
         );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].loc, "https://ex.com/a");

@@ -144,7 +144,10 @@ fn persisted_future_render_is_not_served() {
 fn persisted_render_context_rejects_other_routes_and_legacy_entries() {
     let seed = json!({"version": 3, "renders": {URL: {"html": "legacy", "at": now()}}});
     let (mut state, original, bytes) = copied_state(&seed);
-    assert_eq!(state.render_for(URL).unwrap().html, "legacy");
+    assert!(
+        state.render_for(URL).is_none(),
+        "legacy cached DOM cannot establish which login generation produced it"
+    );
     assert!(state.render_for_context(URL, "owned-route-a").is_none());
     state.record_render_context(URL, "scoped-owned", "owned-route-a");
     let state = GhostState::load();

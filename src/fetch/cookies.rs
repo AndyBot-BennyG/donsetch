@@ -95,6 +95,10 @@ fn normalize_domain(raw: &str) -> Option<String> {
     if s.ends_with('.') {
         s.pop();
     }
+    let ip = s.trim_matches(['[', ']']).parse::<std::net::IpAddr>().ok();
+    if let Some(ip) = ip {
+        return Some(ip.to_string());
+    }
     valid_host_labels(&s)?;
     Some(s)
 }
@@ -114,6 +118,10 @@ fn normalize_host(raw: &str) -> Option<String> {
     // Strip one trailing root dot for comparison (hosts are sent without it)
     if s.ends_with('.') {
         s.pop();
+    }
+    let ip = s.trim_matches(['[', ']']).parse::<std::net::IpAddr>().ok();
+    if let Some(ip) = ip {
+        return Some(ip.to_string());
     }
     valid_host_labels(&s)?;
     Some(s)
@@ -416,10 +424,13 @@ impl CookieJar {
             return;
         };
         // Reject invalid/public-suffix domains
-        if psl::domain(normalized.as_bytes()).is_none() {
+        if normalized != "localhost"
+            && normalized.parse::<std::net::IpAddr>().is_err()
+            && psl::domain(normalized.as_bytes()).is_none()
+        {
             return;
         }
-        let host_only = !is_subdomain;
+        let host_only = !is_subdomain || normalized.parse::<std::net::IpAddr>().is_ok();
         let path = if rec.path.is_empty() {
             "/".to_string()
         } else {
@@ -1594,5 +1605,31 @@ mod audit_tests {
             replayed.header_for("old.reddit.com", "/", true).is_none(),
             "a host-only cookie must not widen to siblings on replay"
         );
+    }
+}
+
+#[cfg(test)]
+mod login_literal_regressions {
+    use super::*;
+    #[test]
+    fn explicit_ipv6_cookie_replays_only_to_its_host_and_path() {
+        let mut jar = CookieJar::new();
+        let cookie = CookieRecord {
+            name: "xs".into(),
+            value: "opaque".into(),
+            domain: "::1".into(),
+            path: "/private".into(),
+            expires_at: None,
+            secure: false,
+            http_only: true,
+            same_site: "Lax".into(),
+        };
+        jar.reset(&[cookie]);
+        assert_eq!(
+            jar.header_for("[::1]", "/private", false).as_deref(),
+            Some("xs=opaque")
+        );
+        assert!(jar.header_for("[::2]", "/private", false).is_none());
+        assert!(jar.header_for("[::1]", "/public", false).is_none());
     }
 }

@@ -32,7 +32,7 @@ impl Budget {
             deadline: args
                 .get("deadline_ms")
                 .and_then(Value::as_u64)
-                .map(|ms| std::time::Duration::from_millis(ms.clamp(500, 600_000))),
+                .map(|ms| std::time::Duration::from_millis(ms.clamp(1, 600_000))),
             start: std::time::Instant::now(),
         }
     }
@@ -54,6 +54,7 @@ impl Budget {
 
 /// State selected once before adapter or browser work.
 struct FetchCall {
+    session_stamp: String,
     route: RequestRoute,
     budget: Budget,
 }
@@ -211,7 +212,7 @@ pub(super) async fn fetch_tool(
     let deadline = args
         .get("deadline_ms")
         .and_then(Value::as_u64)
-        .map(|ms| std::time::Duration::from_millis(ms.clamp(500, 600_000)));
+        .map(|ms| std::time::Duration::from_millis(ms.clamp(1, 600_000)));
     // v3: url accepts one URL/handle OR an array of them : batch
     // fetch in a single call, optionally under a shared token
     // budget (budget_tokens) allocated across results.
@@ -1109,7 +1110,12 @@ pub(super) async fn fetch_single(daemon: &Arc<Daemon>, args: &Value, url: &str) 
         state.ensure_persona_egress(host);
         daemon.fetcher.route_for_fetch(url)
     };
-    let call = FetchCall { route, budget };
+    let call = FetchCall {
+        route,
+        budget,
+        session_stamp: crate::ghost::cache::disk_session_stamp()
+            .unwrap_or_else(|| "legacy:0".into()),
+    };
     Box::pin(fetch_single_inner(daemon, args, url, &call)).await
 }
 
@@ -1549,6 +1555,26 @@ async fn fetch_single_inner(
             _ => None,
         }
     };
+    if tier == "auto" && shot.is_none() {
+        let age = daemon
+            .state
+            .lock()
+            .await
+            .human_wall_age(&host, &url, &call.route.id());
+        if let Some(age) = age {
+            let mut trace = Trace::default();
+            trace.step("route", "human-wall-cache", "recent observed refusal", 0);
+            return tool_error_structured(
+                "this exact URL recently required human verification; browser retry skipped",
+                "walled",
+                Some(
+                    json!({"url":url,"code":"wall.captcha","cached":true,"observed_ago_s":age,
+                    "next_action":"use an interactive browser, or tier=1 to recheck HTTP; a new login or route invalidates this short-lived refusal",
+                    "escalation":trace.value()}),
+                ),
+            );
+        }
+    }
     let retry_http =
         no_adapter || args.get("_reddit_session").and_then(Value::as_bool) == Some(true);
     let (route, known_walled) = {
@@ -1884,14 +1910,34 @@ async fn fetch_single_inner(
                 {
                     return v3;
                 }
+                let human_wall = crate::detect::walls::human_verification_wall(&o.body, v);
+                if human_wall {
+                    daemon.state.lock().await.record_human_wall(
+                        &host,
+                        &url,
+                        &call.route.id(),
+                        &call.session_stamp,
+                    );
+                }
                 return tool_error_structured(
-                    verdict_error(v, o.status, &o.url),
+                    if human_wall {
+                        format!(
+                            "interactive verification required at {}; browser escalation skipped for a human CAPTCHA",
+                            o.url
+                        )
+                    } else {
+                        verdict_error(v, o.status, &o.url)
+                    },
                     kind,
                     Some(json!({
                         "url": o.url,
                         "status": o.status,
                         "verdict": format!("{:?}", v),
-                        "next_action": next_action_for(Some(v), o.status, kind),
+                        "next_action": if human_wall {
+                            "interactive verification required; no automated captcha solver (browser escalation skipped)".to_string()
+                        } else if tier == "1" && !json_like && crate::detect::walls::browser_recovery(o.status, &o.headers, &o.body, v) {
+                            "browser escalation disabled by tier=1; retry with tier=2 or tier=auto".to_string()
+                        } else { next_action_for(Some(v), o.status, kind) },
                         "escalation": trace.value(),
                     })),
                 );
@@ -1984,7 +2030,9 @@ async fn fetch_single_inner(
                         "walled",
                         Some(json!({
                             "url": url, "status": final_status, "verdict": final_verdict,
-                            "next_action": next_action_for(Some(v), final_status, "walled"), "escalation": trace.value(),
+                            "next_action": if matches!(v, Verdict::Challenge(_)) {
+                                "browser escalation disabled by tier=1; retry with tier=2 or tier=auto".to_string()
+                            } else { next_action_for(Some(v), final_status, "walled") }, "escalation": trace.value(),
                         })),
                     );
                 }
@@ -2210,6 +2258,7 @@ async fn fetch_single_inner(
             budget,
             &call.route,
             persona_al.as_deref(),
+            &call.session_stamp,
         )
         .await;
         match ghost_result {
@@ -2768,7 +2817,9 @@ pub(super) async fn ghost_escalate(
     budget: Budget,
     route: &crate::transport::request_route::RequestRoute,
     accept_language: Option<&str>,
+    session_stamp: &str,
 ) -> Result<(extract::Extracted, &'static str, u16, String, String), GhostFailure> {
+    let render_state = GhostState::load();
     let t0 = std::time::Instant::now();
     // v4 E2: ghost agrees with the persona pin (viewport + locale).
     let mut wire = {
@@ -2873,7 +2924,11 @@ pub(super) async fn ghost_escalate(
             if let Some(path) = shot {
                 record_shot(&g, path, trace).await;
             }
-            daemon.state.lock().await.record_wall_failed(host);
+            {
+                let mut state = daemon.state.lock().await;
+                state.record_wall_failed(host);
+                state.record_human_wall(host, url, &route.id(), session_stamp);
+            }
             return Err(GhostFailure::Failed(
                 format!("blocked at {url} : interactive captcha requires a human browser session"),
                 "walled",
@@ -3177,11 +3232,11 @@ pub(super) async fn ghost_escalate(
         // cached and re-served as ContentOk forever.
         let dom_verdict = crate::detect::walls::detect_dom_smart(page.html.as_bytes());
         if dom_verdict == Verdict::ContentOk {
-            daemon
-                .state
-                .lock()
-                .await
-                .record_render(&page.document.url, &page.html);
+            daemon.state.lock().await.record_render_session(
+                &page.document.url,
+                &page.html,
+                &render_state.render_stamp(&page.document.url),
+            );
         }
         return Ok((e, t, s, u, page.html));
     }
@@ -4087,7 +4142,7 @@ pub(super) fn apply_page_history(
         if let Some(cell) = res.pointer_mut("/content/0/text") {
             *cell = json!(body);
         }
-    } else if changed != "new" {
+    } else if changed != "new" && !ex_markdown.starts_with("probe: ") {
         // A change note in the content: ONE line, never the delta
         // body. The section-level diff belongs to `since_last` (and
         // to structuredContent.changed_sections); the unasked prepend
@@ -4111,8 +4166,12 @@ pub(super) fn apply_page_history(
     // Change state affects the next model decision. Opaque fingerprints and
     // observation age are client diagnostics.
     if let Some(sc) = res.pointer_mut("/structuredContent") {
-        sc["changed"] = json!(changed);
-        if let Some(d) = &delta {
+        if since_last || !ex_markdown.starts_with("probe: ") {
+            sc["changed"] = json!(changed);
+        }
+        if let Some(d) = &delta
+            && (since_last || !ex_markdown.starts_with("probe: "))
+        {
             sc["changed_sections"] = json!(d);
         }
     }
@@ -4293,6 +4352,7 @@ pub(super) fn finish_result(
     if ex.markdown.starts_with("probe: ") {
         structured["read_status"] = json!("probe");
         structured["content_complete"] = json!(false);
+        structured.as_object_mut().unwrap().remove("content_kind");
         if ex.markdown.starts_with("probe: MATCH") || ex.markdown.starts_with("probe: NO MATCH") {
             structured["matched"] = json!(ex.markdown.starts_with("probe: MATCH"));
         }
@@ -4310,7 +4370,7 @@ pub(super) fn finish_result(
     if omitted > 0 {
         structured["omitted_repeats"] = json!(omitted);
     }
-    if !matches!(ex.lang.as_str(), "" | "und" | "unknown") {
+    if !ex.markdown.starts_with("probe: ") && !matches!(ex.lang.as_str(), "" | "und" | "unknown") {
         structured["lang"] = json!(ex.lang);
     }
     if let Some(next_offset) = ex.next_offset {
@@ -5836,6 +5896,58 @@ mod rules_tests {
         assert!(
             targets.iter().any(|t| t.contains("advisory.example")),
             "{targets:?}"
+        );
+    }
+    // Installs config and rewrites the owned cache; nextest's process isolation is required.
+    #[tokio::test]
+    async fn reliability_running_daemon_reloads_same_size_same_timestamp_login() {
+        let mut config = crate::config::DonsetchConfig::default();
+        config.proxy.from_environment = false;
+        crate::config::install(config).unwrap();
+        let path = crate::paths::cache_dir().join("ghost-state.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let state = |value: &str, revision: &str, epoch: u64| {
+            json!({
+                "version": 3, "vault_epoch": epoch,
+                "session_revision": revision,
+                "profiles": {"example.test": {"session_cookies":[{
+                    "domain":"example.test","name":"xs","path":"/","value":value,
+                    "expires_at":2000000000u64,"http_only":true,"secure":true,"same_site":"Lax"
+                }]}}
+            })
+            .to_string()
+        };
+        let first = state("aaaa", "11111111111111111111111111111111", 10);
+        let second = state("bbbb", "22222222222222222222222222222222", 11);
+        assert_eq!(first.len(), second.len());
+        std::fs::write(&path, first).unwrap();
+        let daemon = Arc::new(super::Daemon::new().await.unwrap());
+        daemon.refresh_vault().await;
+        assert!(
+            daemon
+                .fetcher
+                .jar_all_snapshot()
+                .await
+                .iter()
+                .any(|c| c.name == "xs" && c.value == "aaaa")
+        );
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::fs::write(&path, second).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        daemon.refresh_vault().await;
+        assert!(
+            daemon
+                .fetcher
+                .jar_all_snapshot()
+                .await
+                .iter()
+                .any(|c| c.name == "xs" && c.value == "bbbb"),
+            "session rotation was missed because size and timestamp matched"
         );
     }
 }

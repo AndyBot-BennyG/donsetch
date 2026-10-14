@@ -44,9 +44,28 @@ pub struct CookieRecord {
     pub same_site: String,
 }
 
+/// A recent human-only refusal, scoped to one URL, route and cookie epoch.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HumanWall {
+    pub url_hash: String,
+    pub route: String,
+    pub cookie_stamp: String,
+    pub observed_at: u64,
+}
+
+fn human_url_hash(url: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(url.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// Per-domain intelligence. Evolves with every fetch outcome.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DomainProfile {
+    #[serde(default)]
+    pub human_wall: Option<HumanWall>,
     // === Cookie vault (clearance cookies only) ===
     #[serde(default)]
     pub cookies: Vec<CookieRecord>,
@@ -58,7 +77,10 @@ pub struct DomainProfile {
     /// browser's own kill-without-flush.
     #[serde(default)]
     pub session_cookies: Vec<CookieRecord>,
-    /// Last vault stamp that DELETED this host's session material
+    /// Explicit login material is never evicted by automatic harvest caps.
+    #[serde(default)]
+    pub session_explicit: bool,
+    /// Last vault fence that deleted or replaced this host's session material
     /// (logout / clear). A render captured at or before this stamp
     /// must not survive a later merge, or an unsaved snapshot would
     /// resurrect the logged-out DOM.
@@ -322,6 +344,80 @@ pub struct GhostState {
     /// logout's deletion is not resurrected by it.
     #[serde(default)]
     pub vault_epoch: u64,
+    /// Explicit login/logout identity. Ordinary cookie refreshes preserve it.
+    #[serde(default)]
+    pub auth_revision: String,
+    /// Atomic cookie change marker, last in canonical JSON for bounded reads.
+    #[serde(default)]
+    pub session_revision: Option<String>,
+}
+
+fn change_session_revision(state: &mut GhostState, consent: bool) {
+    state.session_revision = Some(crate::handles::random_base62(24));
+    if consent {
+        state.auth_revision = crate::handles::random_base62(24);
+    }
+}
+
+/// Give legacy vaults a stable cookie identity before a daemon freezes requests.
+pub(crate) fn ensure_session_identity() {
+    if crate::config::cfg().state.no_disk_state
+        || !route_memory_enabled()
+        || route_memory_readonly()
+    {
+        return;
+    }
+    let lock = StateWriteLock::acquire();
+    if !lock.locked || validate_login_vault().is_err() {
+        return;
+    }
+    let mut state = GhostState::load();
+    if state.session_revision.is_none() {
+        change_session_revision(&mut state, false);
+        bump_vault_epoch(&mut state);
+        if let Err(error) = state.persist() {
+            crate::diag!("[ghost] session identity persist failed: {error}");
+        }
+    }
+}
+
+/// Cookie change stamp read from the same atomic snapshot as its data.
+pub(crate) fn disk_session_stamp() -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path()).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::End(-(len.min(192) as i64))).ok()?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail).ok()?;
+    let tail = String::from_utf8_lossy(&tail);
+    if let Some(body) = tail.trim_end().strip_suffix('}') {
+        if let Some((_, value)) = body.rsplit_once(",\"session_revision\":")
+            && let Ok(Some(revision)) = serde_json::from_str::<Option<String>>(value)
+        {
+            return Some(format!("session:{revision}"));
+        }
+        if let Some((_, value)) = body.rsplit_once(",\"vault_epoch\":")
+            && let Ok(epoch) = value.split(',').next().unwrap_or(value).parse::<u64>()
+        {
+            return Some(format!("legacy:{epoch}"));
+        }
+    }
+    // Noncanonical/legacy files still work; only our canonical hot path is bounded.
+    #[derive(Deserialize)]
+    struct Stamp {
+        #[serde(default)]
+        session_revision: Option<String>,
+        #[serde(default)]
+        vault_epoch: u64,
+    }
+    file.seek(SeekFrom::Start(0)).ok()?;
+    let stamp: Stamp = serde_json::from_reader(file).ok()?;
+    Some(
+        stamp
+            .session_revision
+            .map(|s| format!("session:{s}"))
+            .unwrap_or_else(|| format!("legacy:{}", stamp.vault_epoch)),
+    )
 }
 
 /// Stamp a vault write one past the state it was built from. Every
@@ -363,10 +459,19 @@ pub(crate) fn session_cookies_since(cookies: &[CookieRecord], since: u64) -> Vec
         .iter()
         .filter(|c| {
             let host = c.domain.trim_start_matches('.').to_ascii_lowercase();
-            !state
-                .profiles
-                .get(&host)
-                .is_some_and(|p| p.session_cleared_epoch > 0 && p.session_cleared_epoch >= since)
+            let mut domain = host.as_str();
+            loop {
+                if state.profiles.get(domain).is_some_and(|p| {
+                    p.session_cleared_epoch > 0 && p.session_cleared_epoch >= since
+                }) {
+                    return false;
+                }
+                let Some((_, parent)) = domain.split_once('.') else {
+                    break;
+                };
+                domain = parent;
+            }
+            true
         })
         .cloned()
         .collect()
@@ -379,6 +484,7 @@ pub(crate) fn session_cookies_since(cookies: &[CookieRecord], since: u64) -> Vec
 /// with no sharing, which makes competing opens wait and is equally
 /// released on process death.
 struct StateWriteLock {
+    locked: bool,
     #[allow(dead_code)] // RAII: held for the lock, never read
     file: Option<std::fs::File>,
 }
@@ -392,7 +498,10 @@ impl StateWriteLock {
         // (flock and the Windows share-mode open are both
         // non-reentrant).
         if STATE_LOCK_DEPTH.with(|d| d.get()) > 0 {
-            return Self { file: None };
+            return Self {
+                file: None,
+                locked: true,
+            };
         }
         let path = crate::paths::cache_dir().join("ghost-state.lock");
         if let Some(parent) = path.parent() {
@@ -414,14 +523,20 @@ impl StateWriteLock {
                     // (like the flock failure below), and the save
                     // reports its own persist error.
                     crate::diag!("[ghost] cookie vault lock failed: {error}");
-                    return Self { file: None };
+                    return Self {
+                        file: None,
+                        locked: false,
+                    };
                 }
             };
             loop {
                 let got = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
                 if got == 0 {
                     STATE_LOCK_DEPTH.with(|d| d.set(d.get() + 1));
-                    return Self { file: Some(file) };
+                    return Self {
+                        file: Some(file),
+                        locked: true,
+                    };
                 }
                 let error = std::io::Error::last_os_error();
                 if error.kind() != std::io::ErrorKind::Interrupted {
@@ -429,7 +544,10 @@ impl StateWriteLock {
                     // report and proceed rather than wedge the caller.
                     crate::diag!("[ghost] cookie vault lock failed: {error}");
                     STATE_LOCK_DEPTH.with(|d| d.set(d.get() + 1));
-                    return Self { file: Some(file) };
+                    return Self {
+                        file: Some(file),
+                        locked: false,
+                    };
                 }
             }
         }
@@ -447,7 +565,10 @@ impl StateWriteLock {
                 {
                     Ok(file) => {
                         STATE_LOCK_DEPTH.with(|d| d.set(d.get() + 1));
-                        return Self { file: Some(file) };
+                        return Self {
+                            file: Some(file),
+                            locked: true,
+                        };
                     }
                     // ERROR_SHARING_VIOLATION: another donsetch process
                     // holds the lock; wait for it. Anything else (a
@@ -460,20 +581,29 @@ impl StateWriteLock {
                     }
                     Err(error) => {
                         crate::diag!("[ghost] cookie vault lock failed: {error}");
-                        return Self { file: None };
+                        return Self {
+                            file: None,
+                            locked: false,
+                        };
                     }
                 }
             }
         }
         #[cfg(not(any(unix, windows)))]
         {
-            Self { file: None }
+            Self {
+                file: None,
+                locked: false,
+            }
         }
     }
 
     #[cfg(test)]
     fn acquire() -> Self {
-        Self { file: None }
+        Self {
+            file: None,
+            locked: true,
+        }
     }
 }
 
@@ -522,6 +652,8 @@ fn stamp_session_cleared(state: &mut GhostState, key: &str, extra_hosts: &[Strin
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RenderCache {
+    #[serde(default)]
+    pub session_stamp: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document: Option<crate::ghost::document::Document>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -774,25 +906,163 @@ const SESSION_AUTH_HINTS: &[&str] = &[
 /// else (trackers, preferences, A/B buckets) is dropped so the
 /// vault stays small and meaningful.
 pub fn is_session_worthy(c: &CookieRecord) -> bool {
-    if c.domain.is_empty() || c.value.is_empty() {
-        return false;
-    }
-    if c.value.len() > SESSION_VALUE_MAX {
-        return false;
-    }
-    if is_clearance_cookie(&c.name) {
+    if !is_session_usable(c) {
         return false;
     }
     let n = c.name.to_ascii_lowercase();
-    if SESSION_JUNK_PREFIXES.iter().any(|p| n.starts_with(p))
-        || SESSION_JUNK_EXACT.contains(&n.as_str())
-    {
-        return false;
-    }
     if c.expires_at.is_none() {
         return true;
     }
     SESSION_AUTH_HINTS.iter().any(|k| n.contains(k))
+}
+
+/// Cookies explicitly selected by a login may have opaque persistent names.
+/// Apply value/scope/expiry hygiene without guessing which names authenticate.
+pub fn is_session_usable(c: &CookieRecord) -> bool {
+    if c.domain.is_empty()
+        || c.name.is_empty()
+        || c.value.is_empty()
+        || c.value.len() > SESSION_VALUE_MAX
+        || c.expires_at.is_some_and(|e| e <= now())
+        || c.name
+            .chars()
+            .any(|ch| ch.is_control() || r#" ()<>@,;:\"/[]?={}"#.contains(ch))
+        || c.value.chars().any(|ch| ch.is_control() || ch == ';')
+        || (!c.path.is_empty() && !c.path.starts_with('/'))
+    {
+        return false;
+    }
+    let host = c.domain.trim_start_matches('.').trim_matches(['[', ']']);
+    if host != "localhost"
+        && host.parse::<std::net::IpAddr>().is_err()
+        && (url::Host::parse(host).is_err() || psl::domain(host.as_bytes()).is_none())
+    {
+        return false;
+    }
+    let n = c.name.to_ascii_lowercase();
+    !is_clearance_cookie(&n)
+        && !SESSION_JUNK_PREFIXES.iter().any(|p| n.starts_with(p))
+        && !SESSION_JUNK_EXACT.contains(&n.as_str())
+}
+
+/// Refuse to replace unreadable existing login material before capture starts.
+pub fn validate_login_vault() -> Result<(), String> {
+    match std::fs::read(path()) {
+        Ok(bytes) => {
+            serde_json::from_slice::<GhostState>(&bytes).map_err(|_| {
+                "existing login vault is unreadable; preserve it and repair before importing"
+                    .to_string()
+            })?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("login vault was not saved: {e}")),
+    }
+    Ok(())
+}
+
+/// Save an explicit login without silently truncating or evicting its cookies.
+/// Failure leaves the existing vault intact and is reported to the caller.
+pub fn store_login_cookies(cookies: &[CookieRecord]) -> Result<(), String> {
+    #[cfg(not(test))]
+    if crate::config::cfg().state.no_disk_state {
+        return Err("login requires disk state; state.no_disk_state is enabled".into());
+    }
+    let lock = StateWriteLock::acquire();
+    if !lock.locked {
+        return Err("login vault could not be locked; nothing stored".into());
+    }
+    validate_login_vault()?;
+    let mut state = GhostState::load();
+    for c in cookies {
+        if !is_session_usable(c) {
+            return Err("login contains an unusable cookie; nothing stored".into());
+        }
+        let p = state
+            .profiles
+            .entry(c.domain.trim_start_matches('.').to_ascii_lowercase())
+            .or_default();
+        p.session_explicit = true;
+        if let Some(old) = p
+            .session_cookies
+            .iter_mut()
+            .find(|old| old.name == c.name && old.domain == c.domain && old.path == c.path)
+        {
+            *old = c.clone();
+        } else {
+            p.session_cookies.push(c.clone());
+        }
+        if p.session_cookies.len() > 500 {
+            return Err("login exceeds the 500-cookie domain safety limit; nothing stored".into());
+        }
+    }
+    let total: usize = state
+        .profiles
+        .values()
+        .map(|p| p.session_cookies.len())
+        .sum();
+    if total > 5_000 {
+        return Err(
+            "login vault exceeds the 5000-cookie safety limit; log out unused sites first".into(),
+        );
+    }
+    if state.vault_epoch > u64::MAX - 2 {
+        return Err("login vault ordering is exhausted; preserve and repair the state".into());
+    }
+    bump_vault_epoch(&mut state);
+    let barrier = state.vault_epoch;
+    let scopes: Vec<(String, bool)> = cookies
+        .iter()
+        .map(|c| {
+            (
+                c.domain
+                    .trim_start_matches('.')
+                    .trim_matches(['[', ']'])
+                    .to_ascii_lowercase(),
+                c.domain.starts_with('.'),
+            )
+        })
+        .collect();
+    let affected = |host: &str| {
+        let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
+        scopes.iter().any(|(domain, subdomains)| {
+            host == *domain || (*subdomains && host.ends_with(&format!(".{domain}")))
+        })
+    };
+    for (host, p) in &mut state.profiles {
+        if affected(host) {
+            p.session_cleared_epoch = barrier;
+            p.wall_fail_streak = 0;
+            p.last_wall_fail = 0;
+            p.human_wall = None;
+        }
+    }
+    let mut extra = Vec::new();
+    state.renders.retain(|url, _| {
+        let host = crate::search::rank::host_of(url);
+        if affected(&host) {
+            extra.push(host);
+            false
+        } else {
+            true
+        }
+    });
+    for host in extra {
+        state
+            .profiles
+            .entry(host)
+            .or_default()
+            .session_cleared_epoch = barrier;
+    }
+    change_session_revision(&mut state, true);
+    bump_vault_epoch(&mut state);
+    state
+        .persist()
+        .map_err(|e| format!("login vault was not saved: {e}"))?;
+    #[cfg(not(test))]
+    std::fs::File::open(path())
+        .and_then(|f| f.sync_all())
+        .map_err(|e| format!("login vault sync failed: {e}"))?;
+    Ok(())
 }
 
 /// Merge one harvest into the session vault: dedupe by
@@ -807,7 +1077,7 @@ pub(crate) fn merge_session_cookies(vault: &mut Vec<CookieRecord>, harvested: &[
         // evolve as the site rotates its session).
         if let Some(existing) = vault
             .iter_mut()
-            .find(|e| e.name == c.name && e.domain == c.domain)
+            .find(|e| e.name == c.name && e.domain == c.domain && e.path == c.path)
         {
             *existing = c.clone();
             continue;
@@ -830,15 +1100,28 @@ pub fn store_session_cookies(cookies: &[CookieRecord]) {
     // an interleaved pair lost whichever write landed first.
     let _lock = StateWriteLock::acquire();
     let mut state = GhostState::load();
+    let mut changed = false;
     for c in cookies {
-        if !is_session_worthy(c) {
+        if !is_session_usable(c) {
             continue;
         }
         let p = state
             .profiles
-            .entry(c.domain.trim_start_matches('.').to_string())
+            .entry(c.domain.trim_start_matches('.').to_ascii_lowercase())
             .or_default();
-        merge_session_cookies(&mut p.session_cookies, std::slice::from_ref(c));
+        if p.session_explicit {
+            if let Some(old) = p
+                .session_cookies
+                .iter_mut()
+                .find(|old| old.name == c.name && old.domain == c.domain && old.path == c.path)
+            {
+                changed |= *old != *c;
+                *old = c.clone();
+            }
+        } else {
+            changed |= is_session_worthy(c) && !p.session_cookies.iter().any(|old| old == c);
+            merge_session_cookies(&mut p.session_cookies, std::slice::from_ref(c));
+        }
     }
     // Global cap: if the vault exceeds SESSION_MAX, drop the
     // least-recently-solved domains' session vaults first
@@ -846,13 +1129,14 @@ pub fn store_session_cookies(cookies: &[CookieRecord]) {
     let total: usize = state
         .profiles
         .values()
+        .filter(|p| !p.session_explicit)
         .map(|p| p.session_cookies.len())
         .sum();
     if total > SESSION_MAX {
         let mut keys: Vec<(u64, String)> = state
             .profiles
             .iter()
-            .filter(|(_, p)| !p.session_cookies.is_empty())
+            .filter(|(_, p)| !p.session_cookies.is_empty() && !p.session_explicit)
             .map(|(k, p)| (p.last_solved, k.clone()))
             .collect();
         keys.sort_by_key(|(last, _)| *last);
@@ -865,10 +1149,16 @@ pub fn store_session_cookies(cookies: &[CookieRecord]) {
             let drop = p.session_cookies.len().min(excess);
             p.session_cookies.truncate(p.session_cookies.len() - drop);
             excess -= drop;
+            changed |= drop > 0;
         }
     }
+    if changed {
+        change_session_revision(&mut state, false);
+    }
     bump_vault_epoch(&mut state);
-    state.persist();
+    if let Err(error) = state.persist() {
+        crate::diag!("[ghost] cookie vault persist failed: {error}");
+    }
 }
 
 /// Everything currently vaulted, across all domains, for replay
@@ -878,7 +1168,7 @@ pub fn load_session_cookies() -> Vec<CookieRecord> {
     let mut out = Vec::new();
     for p in state.profiles.values() {
         for c in &p.session_cookies {
-            if is_session_worthy(c) {
+            if is_session_usable(c) {
                 out.push(c.clone());
             }
         }
@@ -902,13 +1192,13 @@ pub fn vault_over_jar(sessions: &[CookieRecord], jar: &[CookieRecord]) -> Vec<Co
     fn domain_key(d: &str) -> String {
         d.trim_start_matches('.').to_ascii_lowercase()
     }
-    let owned: std::collections::HashSet<(String, String)> = sessions
+    let owned: std::collections::HashSet<(String, String, String)> = sessions
         .iter()
-        .map(|c| (c.name.clone(), domain_key(&c.domain)))
+        .map(|c| (c.name.clone(), domain_key(&c.domain), c.path.clone()))
         .collect();
     let mut out: Vec<CookieRecord> = jar
         .iter()
-        .filter(|c| !owned.contains(&(c.name.clone(), domain_key(&c.domain))))
+        .filter(|c| !owned.contains(&(c.name.clone(), domain_key(&c.domain), c.path.clone())))
         .cloned()
         .collect();
     out.extend(sessions.iter().cloned());
@@ -920,11 +1210,29 @@ pub fn vault_over_jar(sessions: &[CookieRecord], jar: &[CookieRecord]) -> Vec<Co
 /// that feed the same session). Returns true if anything was
 /// removed. Load-modify-save, atomic, same as the harvest path.
 pub fn clear_session_cookies_for(domain: &str) -> bool {
+    match clear_session_cookies_for_checked(domain) {
+        Ok(removed) => removed,
+        Err(e) => {
+            crate::diag!("[auth] logout failed: {e}");
+            false
+        }
+    }
+}
+
+pub fn clear_session_cookies_for_checked(domain: &str) -> Result<bool, String> {
+    #[cfg(not(test))]
+    if crate::config::cfg().state.no_disk_state {
+        return Err("logout requires disk state".into());
+    }
     let key = domain.trim_start_matches('.').to_ascii_lowercase();
     if key.is_empty() {
-        return false;
+        return Ok(false);
     }
-    let _lock = StateWriteLock::acquire();
+    let lock = StateWriteLock::acquire();
+    if !lock.locked {
+        return Err("logout vault could not be locked; nothing removed".into());
+    }
+    validate_login_vault()?;
     let mut state = GhostState::load();
     let mut removed = false;
     // Issue #173: the tier-1 echo of the vault (synced by sync_tier1_cookies)
@@ -972,13 +1280,16 @@ pub fn clear_session_cookies_for(domain: &str) -> bool {
         // and so a capture ordered at or before the stamp can never
         // survive a merge (the render keep-rule in
         // merge_vault_from_disk).
+        change_session_revision(&mut state, true);
         bump_vault_epoch(&mut state);
         let stamp = state.vault_epoch;
         let extras: Vec<String> = cleared_hosts.into_iter().collect();
         stamp_session_cleared(&mut state, &key, &extras, stamp);
-        state.persist();
+        state
+            .persist()
+            .map_err(|e| format!("logout vault was not saved: {e}"))?;
     }
-    removed
+    Ok(removed)
 }
 
 // ────────────────────────── helpers ──────────────────────────
@@ -1032,6 +1343,38 @@ pub fn cookies_fresh_at(profile: &DomainProfile, now: u64) -> bool {
 // ────────────────────────── GhostState impl ──────────────────────────
 
 impl GhostState {
+    pub(crate) fn session_stamp(&self) -> String {
+        self.session_revision
+            .as_ref()
+            .map(|s| format!("session:{s}"))
+            .unwrap_or_else(|| format!("legacy:{}", self.vault_epoch))
+    }
+
+    /// Per-host login generation, including ancestor logout/relogin barriers.
+    pub(crate) fn render_stamp(&self, url: &str) -> String {
+        let host = crate::search::rank::host_of(url);
+        let mut domain = host.as_str();
+        let mut generation = 0;
+        loop {
+            if let Some(p) = self.profiles.get(domain) {
+                generation = generation.max(p.session_cleared_epoch);
+            }
+            let Some((_, parent)) = domain.split_once('.') else {
+                break;
+            };
+            domain = parent;
+        }
+        format!("host:{generation}")
+    }
+
+    fn current_render_stamp(&self, url: &str) -> String {
+        if disk_session_stamp().is_none_or(|stamp| stamp == self.session_stamp()) {
+            self.render_stamp(url)
+        } else {
+            Self::load().render_stamp(url)
+        }
+    }
+
     pub fn load() -> Self {
         let p = path();
         if let Ok(s) = std::fs::read_to_string(&p) {
@@ -1068,7 +1411,7 @@ impl GhostState {
                 // files on load instead of lingering forever.
                 for profile in state.profiles.values_mut() {
                     let before = profile.session_cookies.len();
-                    profile.session_cookies.retain(is_session_worthy);
+                    profile.session_cookies.retain(is_session_usable);
                     if profile.session_cookies.len() != before {
                         changed = true;
                     }
@@ -1514,13 +1857,15 @@ impl GhostState {
         // nested load-modify-save interleave used to lose whichever
         // write landed first.
         let _lock = StateWriteLock::acquire();
-        self.persist();
+        if let Err(error) = self.persist() {
+            crate::diag!("[ghost] cookie vault persist failed: {error}");
+        }
     }
 
     /// The write itself. Callers already holding the state write
     /// lock (the cookie helpers) must call this, never `save()`: the
     /// lock is not re-entrant.
-    fn persist(&mut self) {
+    fn persist(&mut self) -> std::io::Result<()> {
         // Always persist the current format version: a fresh state
         // derives Default (version 0) and would otherwise keep
         // re-running one-time migrations on every load.
@@ -1532,6 +1877,7 @@ impl GhostState {
             let mut by_activity: Vec<(String, u64)> = self
                 .profiles
                 .iter()
+                .filter(|(_, p)| p.session_cookies.is_empty())
                 .map(|(h, p)| (h.clone(), p.last_activity()))
                 .collect();
             by_activity.sort_by_key(|(_, a)| *a);
@@ -1546,7 +1892,7 @@ impl GhostState {
             // Allow users to disable disk persistence entirely.
             // In-memory state still works during the session.
             if crate::config::cfg().state.no_disk_state {
-                return;
+                return Ok(());
             }
             let p = path();
             let persist = (|| -> std::io::Result<()> {
@@ -1601,13 +1947,16 @@ impl GhostState {
                 {
                     use std::io::Write;
                     use std::os::unix::fs::OpenOptionsExt;
-                    std::fs::OpenOptions::new()
+                    let mut file = std::fs::OpenOptions::new()
                         .write(true)
                         .create(true)
                         .truncate(true)
                         .mode(0o600)
-                        .open(&tmp)?
-                        .write_all(&bytes)?;
+                        .custom_flags(libc::O_NOFOLLOW)
+                        .open(&tmp)?;
+                    use std::os::unix::fs::PermissionsExt;
+                    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+                    file.write_all(&bytes)?;
                 }
                 #[cfg(not(unix))]
                 {
@@ -1615,10 +1964,9 @@ impl GhostState {
                 }
                 std::fs::rename(&tmp, &p)
             })();
-            if let Err(error) = persist {
-                crate::diag!("[ghost] cookie vault persist failed: {error}");
-            }
+            persist?;
         }
+        Ok(())
     }
 
     /// Adopt the disk state's session vault into this snapshot.
@@ -1651,6 +1999,7 @@ impl GhostState {
                 // orders captures against it.
                 Some(p) => {
                     p.session_cookies = dp.session_cookies.clone();
+                    p.session_explicit = dp.session_explicit;
                     p.session_cleared_epoch = dp.session_cleared_epoch;
                 }
                 // Disk-only host: a helper harvested a host this
@@ -1663,6 +2012,8 @@ impl GhostState {
             }
         }
         self.tier1_cookies = disk.tier1_cookies.clone();
+        self.auth_revision = disk.auth_revision.clone();
+        self.session_revision = disk.session_revision.clone();
         // Renders merge per key: adopting the disk map wholesale
         // dropped every render the live snapshot captured after the
         // disk write that created the newer epoch, and keeping the
@@ -1706,6 +2057,45 @@ impl GhostState {
     /// suddenly passes tier-1 cold is suspicious.
     pub fn is_known_walled(&self, host: &str) -> bool {
         self.profiles.get(host).is_some_and(|p| p.needs_tier2)
+    }
+
+    /// Cached refusal age. Future/stale records, new cookies and new routes
+    /// never suppress a fresh observation. Explicit tiers bypass this lookup.
+    pub fn human_wall_age(&self, host: &str, url: &str, route: &str) -> Option<u64> {
+        if !route_memory_enabled() {
+            return None;
+        }
+        let wall = self.profiles.get(host)?.human_wall.as_ref()?;
+        let age = now().checked_sub(wall.observed_at)?;
+        (age < 300
+            && wall.cookie_stamp == {
+                #[cfg(test)]
+                {
+                    self.session_stamp()
+                }
+                #[cfg(not(test))]
+                {
+                    disk_session_stamp()?
+                }
+            }
+            && wall.route == route
+            && wall.url_hash == human_url_hash(url))
+        .then_some(age)
+    }
+
+    /// Remember one observed human-only URL without penalizing other pages.
+    pub fn record_human_wall(&mut self, host: &str, url: &str, route: &str, cookie_stamp: &str) {
+        if !route_memory_enabled() || route_memory_readonly() {
+            return;
+        }
+        let wall = HumanWall {
+            url_hash: human_url_hash(url),
+            route: route.into(),
+            cookie_stamp: cookie_stamp.into(),
+            observed_at: now(),
+        };
+        self.profiles.entry(host.into()).or_default().human_wall = Some(wall);
+        self.save();
     }
 
     pub fn route_for(&self, host: &str) -> RouteDecision {
@@ -2026,11 +2416,11 @@ impl GhostState {
     }
 
     pub fn record_render(&mut self, url: &str, html: &str) {
-        self.record_render_entry(url, html, None, None);
+        self.record_render_entry(url, html, None, None, None);
     }
 
     pub fn record_render_context(&mut self, url: &str, html: &str, context: &str) {
-        self.record_render_entry(url, html, Some(context.to_string()), None);
+        self.record_render_entry(url, html, Some(context.to_string()), None, None);
     }
 
     pub fn record_render_document(
@@ -2039,12 +2429,28 @@ impl GhostState {
         html: &str,
         context: &str,
     ) {
+        let stamp = self.render_stamp(&document.url);
+        self.record_render_document_session(document, html, context, &stamp);
+    }
+
+    pub fn record_render_document_session(
+        &mut self,
+        document: &crate::ghost::document::Document,
+        html: &str,
+        context: &str,
+        session_stamp: &str,
+    ) {
         self.record_render_entry(
             &document.url,
             html,
             Some(context.to_string()),
             Some(document.clone()),
+            Some(session_stamp),
         );
+    }
+
+    pub fn record_render_session(&mut self, url: &str, html: &str, session_stamp: &str) {
+        self.record_render_entry(url, html, None, None, Some(session_stamp));
     }
 
     fn record_render_entry(
@@ -2053,6 +2459,7 @@ impl GhostState {
         html: &str,
         context: Option<String>,
         document: Option<crate::ghost::document::Document>,
+        session_stamp: Option<&str>,
     ) {
         // Skip oversized pages : caching 1MB+ HTML bloats the state
         // file with no benefit (large pages are usually not SPAs
@@ -2073,9 +2480,13 @@ impl GhostState {
         {
             self.renders.remove(&oldest_key);
         }
+        let session_stamp = session_stamp
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.render_stamp(url));
         self.renders.insert(
             url.to_string(),
             RenderCache {
+                session_stamp,
                 document,
                 context,
                 html: html.to_string(),
@@ -2092,7 +2503,9 @@ impl GhostState {
     pub fn render_for(&self, url: &str) -> Option<&RenderCache> {
         let n = now();
         self.renders.get(url).filter(|r| {
-            r.context.is_none() && n.checked_sub(r.at).is_some_and(|age| age < RENDER_TTL)
+            r.context.is_none()
+                && r.session_stamp == self.current_render_stamp(url)
+                && n.checked_sub(r.at).is_some_and(|age| age < RENDER_TTL)
         })
     }
 
@@ -2100,6 +2513,7 @@ impl GhostState {
         let n = now();
         self.renders.get(url).filter(|r| {
             r.context.as_deref() == Some(context)
+                && r.session_stamp == self.current_render_stamp(url)
                 && n.checked_sub(r.at).is_some_and(|age| age < RENDER_TTL)
         })
     }
@@ -2353,8 +2767,33 @@ mod tests {
 
     // == v4.6 vault ordering: captures vs deletions ==
 
+    #[test]
+    fn relogin_barrier_blocks_old_child_captures_but_accepts_new_actor() {
+        let mut state = GhostState {
+            vault_epoch: 12,
+            ..Default::default()
+        };
+        state
+            .profiles
+            .entry("ex.com".into())
+            .or_default()
+            .session_cleared_epoch = 11;
+        std::fs::create_dir_all(path().parent().unwrap()).unwrap();
+        std::fs::write(path(), serde_json::to_vec(&state).unwrap()).unwrap();
+        let c = cr("xs", "opaque", "new.child.ex.com", None);
+        assert!(session_cookies_since(std::slice::from_ref(&c), 10).is_empty());
+        assert!(session_cookies_since(std::slice::from_ref(&c), 11).is_empty());
+        assert_eq!(session_cookies_since(std::slice::from_ref(&c), 12), vec![c]);
+        let unrelated = cr("xs", "opaque", "other.com", None);
+        assert_eq!(
+            session_cookies_since(std::slice::from_ref(&unrelated), 10),
+            vec![unrelated]
+        );
+    }
+
     fn render(html: &str, at: u64, capture_epoch: u64) -> RenderCache {
         RenderCache {
+            session_stamp: String::new(),
             document: None,
             context: Some("ctx".into()),
             html: html.into(),
@@ -3856,5 +4295,48 @@ mod tests {
         let p = &s.profiles["hard.com"];
         assert_eq!(p.cookies.len(), 1); // only cf_clearance updated
         assert_eq!(p.cookies[0].value, "new");
+    }
+    #[test]
+    fn reliability_human_refusal_is_scoped_and_never_stores_url_tokens() {
+        let mut state = GhostState::default();
+        let url = "https://example.com/blocked?token=OWNED-DO-NOT-STORE";
+        state.record_human_wall("example.com", url, "direct", &state.session_stamp());
+        assert!(state.human_wall_age("example.com", url, "direct").is_some());
+        assert!(
+            state
+                .human_wall_age("example.com", "https://example.com/other", "direct")
+                .is_none()
+        );
+        assert!(
+            state
+                .human_wall_age("example.com", url, "other-route")
+                .is_none()
+        );
+        assert!(
+            !serde_json::to_string(&state)
+                .unwrap()
+                .contains("OWNED-DO-NOT-STORE")
+        );
+        state.session_revision = Some("changed-login-cookie-identity".into());
+        assert!(state.human_wall_age("example.com", url, "direct").is_none());
+        state.record_human_wall("example.com", url, "direct", &state.session_stamp());
+        state
+            .profiles
+            .get_mut("example.com")
+            .unwrap()
+            .human_wall
+            .as_mut()
+            .unwrap()
+            .observed_at = now() + 100;
+        assert!(state.human_wall_age("example.com", url, "direct").is_none());
+        state
+            .profiles
+            .get_mut("example.com")
+            .unwrap()
+            .human_wall
+            .as_mut()
+            .unwrap()
+            .observed_at = now() - 301;
+        assert!(state.human_wall_age("example.com", url, "direct").is_none());
     }
 }

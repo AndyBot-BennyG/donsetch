@@ -533,6 +533,7 @@ pub fn extract(
                     url,
                     opts,
                     max_chars,
+                    None,
                 );
             }
             Err(crate::pdf::PdfFailure::Encrypted) => {
@@ -647,6 +648,25 @@ pub fn extract(
         blocks::segment(*root, &base, opts, &mut all_blocks);
     }
 
+    let neutral_identity = if opts.include_links || opts.include_media {
+        let neutral = ExtractOptions {
+            selector: opts.selector.clone(),
+            ..Default::default()
+        };
+        let mut neutral_blocks = Vec::new();
+        for root in &roots {
+            blocks::segment(*root, &base, &neutral, &mut neutral_blocks);
+        }
+        Some(render::render(
+            &meta,
+            url,
+            &neutral_blocks.iter().collect::<Vec<_>>(),
+            &neutral,
+        ))
+    } else {
+        None
+    };
+
     let extracted = downstream(
         &meta,
         all_blocks,
@@ -659,6 +679,7 @@ pub fn extract(
         url,
         opts,
         max_chars,
+        neutral_identity,
     )?;
 
     // A TOC is a complete projection, not a failed short extraction. Once
@@ -771,13 +792,16 @@ fn downstream(
     url: &str,
     opts: &ExtractOptions,
     max_chars: usize,
+    neutral_identity: Option<String>,
 ) -> Result<Extracted, ExtractError> {
-    let identity = render::render(
-        meta,
-        url,
-        &all_blocks.iter().collect::<Vec<_>>(),
-        &ExtractOptions::default(),
-    );
+    let identity = neutral_identity.unwrap_or_else(|| {
+        render::render(
+            meta,
+            url,
+            &all_blocks.iter().collect::<Vec<_>>(),
+            &ExtractOptions::default(),
+        )
+    });
     if pdf_pages.is_none()
         && let Some(v) = crate::detect::walls::text_wall(&identity)
     {

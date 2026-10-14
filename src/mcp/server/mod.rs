@@ -52,11 +52,9 @@ pub struct Daemon {
     crawler: Crawler,
     handles: Arc<Mutex<crate::handles::HandleTable>>,
     history: Arc<std::sync::Mutex<crate::pages::history::PageHistory>>,
-    /// (modified, len) of ghost-state.json at the last vault refresh:
-    /// a login or logout CLI write flips this and the next tool call
-    /// resyncs the cookie jar. mtime-only would miss same-second
-    /// login+logout pairs, hence the length pair.
-    vault_seen: tokio::sync::Mutex<Option<(u64, u64)>>,
+    /// Cookie revision from the atomic vault snapshot. Timestamps and size
+    /// cannot identify equal-size replacements on every supported platform.
+    vault_seen: tokio::sync::Mutex<Option<String>>,
     /// One background pre-solve at a time: search hints for a walled
     /// domain trigger a solve while the agent is still reading
     /// results. Cheap spinlock: a lost race just skips the win.
@@ -81,6 +79,7 @@ impl Daemon {
         let fetcher =
             Arc::new(Fetcher::new(profile.clone())?.with_egress(std::sync::Arc::clone(&egress)));
         let ghost_mgr = GhostManager::new().await;
+        crate::ghost::cache::ensure_session_identity();
         let state = Arc::new(Mutex::new(GhostState::load()));
 
         // Tier 1 starts the session with the vault too: a domain
@@ -217,47 +216,32 @@ impl Daemon {
         self.ghost_mgr.shutdown().await;
     }
 
-    /// Resync the tier-1 cookie jar from the session vault when the
-    /// on-disk file moved (login/logout/rotation). Stat-only in the
-    /// hot path; parse only after a real change.
+    /// Resync the tier-1 cookie jar after login/logout/rotation. The
+    /// hot path reads a bounded trailer; parse only after a real cookie change.
     pub async fn refresh_vault(&self) {
-        let meta = std::fs::metadata(crate::paths::cache_dir().join("ghost-state.json"))
-            .ok()
-            .map(|m| {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::MetadataExt;
-                    (m.mtime() as u64, m.len())
-                }
-                #[cfg(not(unix))]
-                {
-                    (0u64, m.len())
-                }
-            });
-        let Some(sig) = meta else { return };
-        let changed = {
-            let mut seen = self.vault_seen.lock().await;
-            let changed = *seen != Some(sig);
-            if changed {
-                *seen = Some(sig);
-            }
-            changed
+        let Some(sig) = crate::ghost::cache::disk_session_stamp() else {
+            return;
         };
-        if changed {
-            let sessions = crate::ghost::cache::load_session_cookies();
-            // Reset is wholesale: keep the tier-1 jar (device /
-            // analytics cookies the browser-real daemon already
-            // holds) so a login resync does not erase the session.
-            // The vault outranks the jar echo for a key both hold
-            // (#319): the echo's anonymous values for a login
-            // cookie's name must not survive the rebuild.
+        let mut seen = self.vault_seen.lock().await;
+        if seen.as_ref() != Some(&sig) {
+            let disk = GhostState::load();
+            let stamp = disk.session_stamp();
+            let sessions: Vec<_> = disk
+                .profiles
+                .values()
+                .flat_map(|p| &p.session_cookies)
+                .filter(|c| crate::ghost::cache::is_session_usable(c))
+                .cloned()
+                .collect();
+            self.state.lock().await.merge_vault_from_disk(&disk);
             let jar = if crate::config::cfg().state.cookie_vault {
-                self.state.lock().await.tier1_cookies.clone()
+                disk.tier1_cookies.clone()
             } else {
                 Vec::new()
             };
             let cookies = crate::ghost::cache::vault_over_jar(&sessions, &jar);
             self.fetcher.reset_to(&cookies).await;
+            *seen = Some(stamp);
         }
     }
 }

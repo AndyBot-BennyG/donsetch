@@ -2546,8 +2546,10 @@ async fn report_audit_crawl_budgets_are_hard_under_parallel_workers() {
     options.respect_robots = false;
     let history_writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let writes = history_writes.clone();
-    options.on_page = Some(Arc::new(move |_, _, _, _| {
-        writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    options.on_page = Some(Arc::new(move |_, _, md, _| {
+        if !md.is_empty() {
+            writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }));
     let result = crawler
         .crawl("https://ex.com/p0", options, None)
@@ -3334,4 +3336,153 @@ async fn focus_timeline_survives_related_cards_and_a_2000_byte_page_budget() {
     assert!(!page.markdown.contains("industry partnerships"));
     assert!(page.markdown.len() <= 2000);
     assert!(page.next_offset.is_none());
+}
+
+#[tokio::test]
+async fn reliability_small_page_and_total_caps_are_hard() {
+    let seed = "https://cap.example/";
+    let site = MockSite::new().page(
+        seed,
+        200,
+        &html("Budget", &"Evidence with Unicode नेपाली. ".repeat(50)),
+    );
+    let (fetch, _) = site.fetcher();
+    let r = Crawler::new(fetch, gov())
+        .crawl(
+            seed,
+            CrawlOptions {
+                mode: CrawlMode::Content,
+                respect_robots: false,
+                max_depth: 0,
+                per_page_max: 100,
+                max_total_chars: 500,
+                min_quality: 0.0,
+                ..opts()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.pages.len(), 1);
+    assert!(r.pages[0].chars <= 100, "{}", r.pages[0].chars);
+    assert!(r.pages[0].next_offset.is_some());
+}
+
+#[tokio::test]
+async fn reliability_capped_inventory_never_reports_drained() {
+    let seed = "https://map.example/";
+    let xml = format!(
+        "<urlset>{}</urlset>",
+        (0..250)
+            .map(|i| format!("<url><loc>https://map.example/p{i}</loc></url>"))
+            .collect::<String>()
+    );
+    let (fetch, _) = MockSite::new()
+        .page(seed, 200, &html("Map", "Docs"))
+        .page("https://map.example/sitemap.xml", 200, &xml)
+        .fetcher();
+    let r = Crawler::new(fetch, gov())
+        .crawl(
+            seed,
+            CrawlOptions {
+                mode: CrawlMode::Map,
+                respect_robots: false,
+                map_cap: 120,
+                ..opts()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.map.len(), 120);
+    assert_ne!(
+        r.stop,
+        StopReason::FrontierEmpty,
+        "inventory has 130 omitted URLs"
+    );
+}
+
+#[tokio::test]
+async fn reliability_delta_uses_full_source_fingerprint_without_false_baseline_text() {
+    let seed = "https://delta.example/";
+    let source = html("Source", &"Long unchanged source evidence. ".repeat(300));
+    let make = || MockSite::new().page(seed, 200, &source).fetcher().0;
+    let seen = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+    let writes = seen.clone();
+    let options = CrawlOptions {
+        mode: CrawlMode::Content,
+        respect_robots: false,
+        per_page_max: 100,
+        on_page: Some(Arc::new(move |url, fp, md, _| {
+            assert!(
+                md.is_empty(),
+                "a sliced read must never become full baseline text"
+            );
+            writes
+                .lock()
+                .unwrap()
+                .insert(url.to_string(), fp.unwrap().to_string());
+        })),
+        ..opts()
+    };
+    let first = Crawler::new(make(), gov())
+        .crawl(seed, options, None)
+        .await
+        .unwrap();
+    assert_eq!(first.pages.len(), 1);
+    assert!(seen.lock().unwrap().contains_key(seed));
+    let second = Crawler::new(make(), gov())
+        .crawl(
+            seed,
+            CrawlOptions {
+                mode: CrawlMode::Content,
+                respect_robots: false,
+                per_page_max: 100,
+                delta_unchanged: Some(Arc::new(move |url, fp| {
+                    seen.lock().unwrap().get(url).is_some_and(|old| old == fp)
+                })),
+                ..opts()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(second.pages.is_empty());
+    assert!(
+        second
+            .skipped
+            .iter()
+            .any(|(_, reason)| reason == "unchanged since last crawl")
+    );
+}
+
+#[tokio::test]
+async fn reliability_map_limit_can_expand_without_false_completeness() {
+    let seed = "https://inventory.example/";
+    let xml = format!(
+        "<urlset>{}</urlset>",
+        (0..450)
+            .map(|i| format!("<url><loc>https://inventory.example/p{i}</loc></url>"))
+            .collect::<String>()
+    );
+    let (fetch, _) = MockSite::new()
+        .page(seed, 200, &html("Map", "Docs"))
+        .page("https://inventory.example/sitemap.xml", 200, &xml)
+        .fetcher();
+    let r = Crawler::new(fetch, gov())
+        .crawl(
+            seed,
+            CrawlOptions {
+                mode: CrawlMode::Map,
+                respect_robots: false,
+                map_cap: 500,
+                ..opts()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.map.len(), 450);
+    assert!(r.inventory.complete);
+    assert_eq!(r.stop, StopReason::FrontierEmpty);
 }

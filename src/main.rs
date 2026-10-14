@@ -236,7 +236,12 @@ async fn run() {
         "keys" => cli::keys::run(&args).await,
         "rules" => cli::rules::run(&args),
 
-        "login" => cli::login::run(&args).await,
+        "login" => {
+            if let Err(e) = cli::login::run(&args).await {
+                donsetch::diag!("donsetch login: {e}");
+                std::process::exit(1);
+            }
+        }
         "proxy" => cli::proxy::run(&args).await,
         "status" => cli::status::run().await,
         "adapters" => match args.get(2).map(String::as_str) {

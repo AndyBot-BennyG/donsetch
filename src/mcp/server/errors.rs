@@ -567,7 +567,7 @@ pub(super) fn next_action_for(verdict: Option<Verdict>, status: u16, kind: &str)
             "verify the URL (typo? deleted page?) : or web_search the page title to find the moved copy".into()
         }
         Some(Verdict::Challenge(_)) if kind == "walled" => {
-            "tier 2 browser could not solve it : interactive verification needed; no automated path (by design DonSeTch does not solve captchas)".into()
+            "interactive verification needed; no automated captcha-solving path (by design DonSeTch does not solve captchas)".into()
         }
         Some(Verdict::Challenge(_)) => {
             "retry with tier=2 (or tier=auto) : the headless browser solves most JS/cookie challenges".into()

@@ -1404,6 +1404,7 @@ fn short_pdf_is_not_classified_as_an_html_shell() {
         "https://example.com/receipt.pdf",
         &ExtractOptions::default(),
         16_000,
+        None,
     )
     .unwrap();
 
@@ -2868,4 +2869,63 @@ fn report_audit_selector_cannot_be_ignored_by_json_or_pdf() {
             Err(ExtractError::SelectorNoMatch { inspected: 0, .. })
         ));
     }
+}
+
+#[test]
+fn reliability_links_survive_loose_content_headings_and_table_cells() {
+    let html = r#"<html><body><main><h1>Evidence</h1>
+    <div>Research cites <a href="https://loose.example/report">the original report</a> for verification and factual context.</div>
+    <h2><a href="https://heading.example/spec">Specification source</a></h2>
+    <p>The evidence has ample descriptive content, including <a href="https://prose.example/data">the official dataset</a> with verifiable results.</p>
+    <table><tr><th>Source</th><th>Claim</th></tr><tr><td><a href="https://table.example/study">Original study</a></td><td>Verified data</td></tr></table>
+    </main></body></html>"#;
+    let r = extract_html_opts(
+        html,
+        &ExtractOptions {
+            include_links: true,
+            ..Default::default()
+        },
+    );
+    for host in ["loose", "heading", "prose", "table"] {
+        assert!(
+            r.markdown.contains(&format!("https://{host}.example/")),
+            "{host}: {}",
+            r.markdown
+        );
+    }
+}
+
+#[test]
+fn reliability_link_projection_does_not_change_source_fingerprint() {
+    let html = r#"<main><h1>Evidence</h1><p>This research links to <a href='https://source.example/spec'>the specification</a> for complete supporting evidence and context.</p><div>Loose <a href='https://other.example/data'>data source</a> is useful too.</div></main>"#;
+    let plain = extract_html_opts(html, &ExtractOptions::default());
+    let links = extract_html_opts(
+        html,
+        &ExtractOptions {
+            include_links: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(plain.fingerprint, links.fingerprint);
+    assert_ne!(plain.markdown, links.markdown);
+}
+
+#[test]
+fn reliability_short_article_focus_preserves_specific_evidence() {
+    let html = format!(
+        "<main><h1>Deployment handbook</h1><h2>Retries</h2><p>On HTTP 503, retry with exponential backoff and jitter; honor Retry-After.</p><h2>Storage</h2><p>{}</p><h2>Logging</h2><p>{}</p></main>",
+        "Storage retains encrypted snapshots. ".repeat(22),
+        "Logging records errors without tokens. ".repeat(22)
+    );
+    let full = extract_html_opts(&html, &ExtractOptions::default());
+    let focused = extract_html_opts(
+        &html,
+        &ExtractOptions {
+            focus: Some("HTTP 503 retry backoff".into()),
+            ..Default::default()
+        },
+    );
+    assert!(focused.markdown.contains("Retry-After"));
+    assert!(!focused.markdown.contains("showing full content"));
+    assert!(focused.markdown.len() * 2 < full.markdown.len());
 }

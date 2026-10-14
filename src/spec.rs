@@ -410,6 +410,15 @@ const CRAWL_PARAMS: &[ParamSpec] = &[
         mcp_help: None,
     },
     ParamSpec {
+        name: "map_limit",
+        flag: "map-limit",
+        kind: ParamKind::Usize,
+        cli: CliKind::Flag,
+        required: false,
+        help: "Max URLs returned in the inventory (default 120, range 1-50000). A capped inventory is incomplete; narrow focus/include_paths for large sites.",
+        mcp_help: None,
+    },
+    ParamSpec {
         name: "max_depth",
         flag: "max-depth",
         kind: ParamKind::Usize,
@@ -424,7 +433,7 @@ const CRAWL_PARAMS: &[ParamSpec] = &[
         kind: ParamKind::Usize,
         cli: CliKind::Flag,
         required: false,
-        help: "Total extracted-char budget across all pages (default 60000, range 4000-500000).",
+        help: "Total extracted-char budget across all pages (default 60000, range 1-500000).",
         mcp_help: None,
     },
     ParamSpec {
@@ -433,7 +442,7 @@ const CRAWL_PARAMS: &[ParamSpec] = &[
         kind: ParamKind::Usize,
         cli: CliKind::Flag,
         required: false,
-        help: "Max markdown chars per page (default 8000, range 400-40000).",
+        help: "Max markdown chars per page (default 8000, range 1-40000).",
         mcp_help: None,
     },
     ParamSpec {
@@ -478,7 +487,7 @@ const CRAWL_PARAMS: &[ParamSpec] = &[
         kind: ParamKind::Usize,
         cli: CliKind::Flag,
         required: false,
-        help: "Hard crawl deadline in seconds (default 120, range 5-600). Partial results return after.",
+        help: "Hard crawl deadline in seconds (default 120, range 1-600). Partial results return after.",
         mcp_help: None,
     },
     ParamSpec {
@@ -489,7 +498,7 @@ const CRAWL_PARAMS: &[ParamSpec] = &[
         required: false,
         help: "Delta crawl: pages are re-checked against fingerprint memory; only new/changed pages are returned. Monitoring and re-crawls at a fraction of the cost.",
         mcp_help: Some(
-            "Return only pages new or changed since the last crawl of this site (a site-wide baseline; web_fetch's since_last tracks per URL). Use for monitoring or a repeated crawl, not a first visit.",
+            "Re-fetch pages and return only new or changed source fingerprints. Prior crawls or fetches supply per-URL baselines. Saves output, not verification requests; use for repeated reads.",
         ),
     },
     ParamSpec {

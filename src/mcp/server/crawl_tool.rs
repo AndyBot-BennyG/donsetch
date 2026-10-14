@@ -23,59 +23,7 @@ pub(super) async fn crawl_tool(daemon: &Arc<Daemon>, args: &Value, ctx: Option<T
         }
         Some(u) => return tool_error(format!("crawl: url must be http(s), got: {u}")),
     };
-    let mut opts = CrawlOptions::default();
-    opts.focus = args.get("focus").and_then(Value::as_str).map(String::from);
-    opts.mode = match args.get("mode").and_then(Value::as_str).unwrap_or("full") {
-        "map" => CrawlMode::Map,
-        "content" => CrawlMode::Content,
-        _ => CrawlMode::Full,
-    };
-    if let Some(n) = args.get("max_pages").and_then(Value::as_u64) {
-        opts.max_pages = n.clamp(1, 200) as usize;
-    }
-    if let Some(n) = args.get("max_depth").and_then(Value::as_u64) {
-        opts.max_depth = n.clamp(0, 8) as u32;
-    }
-    if let Some(n) = args.get("max_total_chars").and_then(Value::as_u64) {
-        opts.max_total_chars = (n as usize).clamp(4_000, 500_000);
-    }
-    if let Some(n) = args.get("per_page_max").and_then(Value::as_u64) {
-        opts.per_page_max = (n as usize).clamp(400, 40_000);
-    }
-    if let Some(a) = args.get("include_paths").and_then(Value::as_array) {
-        opts.include_paths = a
-            .iter()
-            .filter_map(Value::as_str)
-            .map(String::from)
-            .collect();
-    }
-    if let Some(a) = args.get("exclude_paths").and_then(Value::as_array) {
-        opts.exclude_paths = a
-            .iter()
-            .filter_map(Value::as_str)
-            .map(String::from)
-            .collect();
-    }
-    if let Some(b) = args.get("same_host").and_then(Value::as_bool) {
-        opts.same_host = b;
-    }
-    if let Some(b) = args.get("respect_robots").and_then(Value::as_bool) {
-        opts.respect_robots = b;
-    }
-    if let Some(n) = args.get("deadline_s").and_then(Value::as_u64) {
-        opts.deadline = std::time::Duration::from_secs(n.clamp(5, 600));
-    }
-    if let Some(q) = args.get("min_quality").and_then(Value::as_f64) {
-        opts.min_quality = q.clamp(0.0, 1.0) as f32;
-    }
-    // v4 phase 3: dataset mode is output-format only.
-    if args
-        .get("dataset")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        opts.dataset = true;
-    }
+    let mut opts = crawl_options(args);
     let resume = args.get("resume").and_then(Value::as_str).map(String::from);
 
     // v4 phase 3 delta crawl: pages are re-checked and their fresh
@@ -388,10 +336,33 @@ fn seed_failure_error(failure: &crate::crawl::SeedFailure, escalation: Option<Va
         ),
         // No bypass hint: switching robots off during an outage would
         // undo the unreachable-means-disallow rule (#351).
+        Some(RobotsRefusal::Unreachable)
+            if failure
+                .error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("network.dns:")) =>
+        {
+            (
+                "permanent",
+                Cow::Borrowed("network.dns"),
+                format!(
+                    "DNS resolution failed while checking robots.txt: {}",
+                    failure.error.as_deref().unwrap_or("")
+                ),
+                "check the seed hostname; this name could not be resolved, so no pages were fetched",
+            )
+        }
         Some(RobotsRefusal::Unreachable) => (
             "transient",
             Cow::Borrowed("crawl.robots_unreachable"),
-            "the origin's robots.txt could not be read, which counts as disallow-all".to_string(),
+            format!(
+                "the origin's robots.txt could not be read, which counts as disallow-all{}",
+                failure
+                    .error
+                    .as_ref()
+                    .map(|e| format!(": {e}"))
+                    .unwrap_or_default()
+            ),
             "retry later, once the site's robots.txt is reachable again",
         ),
         None if matches!(status, 404 | 410) || verdict == "SoftNotFound" => (
@@ -405,6 +376,22 @@ fn seed_failure_error(failure: &crate::crawl::SeedFailure, escalation: Option<Va
         // Its error survives only as text, so the text classifier names
         // it; its default (`content.extract`) is no network code, and the
         // crawl fallback takes over.
+        None if status == 0
+            && failure
+                .error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("network.dns:")) =>
+        {
+            (
+                "permanent",
+                Cow::Borrowed("network.dns"),
+                format!(
+                    "DNS resolution failed: {}",
+                    failure.error.as_deref().unwrap_or("")
+                ),
+                "check the seed hostname or use another source",
+            )
+        }
         None if status == 0 => (
             "transient",
             failure
@@ -499,6 +486,67 @@ fn seed_failure_error(failure: &crate::crawl::SeedFailure, escalation: Option<Va
     tool_error_structured(text, kind, Some(structured))
 }
 
+#[allow(clippy::field_reassign_with_default)]
+fn crawl_options(args: &Value) -> CrawlOptions {
+    let mut opts = CrawlOptions::default();
+    opts.focus = args.get("focus").and_then(Value::as_str).map(String::from);
+    opts.mode = match args.get("mode").and_then(Value::as_str).unwrap_or("full") {
+        "map" => CrawlMode::Map,
+        "content" => CrawlMode::Content,
+        _ => CrawlMode::Full,
+    };
+    if let Some(n) = args.get("max_pages").and_then(Value::as_u64) {
+        opts.max_pages = n.clamp(1, 200) as usize;
+    }
+    if let Some(n) = args.get("max_depth").and_then(Value::as_u64) {
+        opts.max_depth = n.clamp(0, 8) as u32;
+    }
+    if let Some(n) = args.get("max_total_chars").and_then(Value::as_u64) {
+        opts.max_total_chars = (n as usize).clamp(1, 500_000);
+    }
+    if let Some(n) = args.get("per_page_max").and_then(Value::as_u64) {
+        opts.per_page_max = (n as usize).clamp(1, 40_000);
+    }
+    if let Some(n) = args.get("map_limit").and_then(Value::as_u64) {
+        opts.map_cap = (n as usize).clamp(1, 50_000);
+    }
+    if let Some(a) = args.get("include_paths").and_then(Value::as_array) {
+        opts.include_paths = a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(String::from)
+            .collect();
+    }
+    if let Some(a) = args.get("exclude_paths").and_then(Value::as_array) {
+        opts.exclude_paths = a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(String::from)
+            .collect();
+    }
+    if let Some(b) = args.get("same_host").and_then(Value::as_bool) {
+        opts.same_host = b;
+    }
+    if let Some(b) = args.get("respect_robots").and_then(Value::as_bool) {
+        opts.respect_robots = b;
+    }
+    if let Some(n) = args.get("deadline_s").and_then(Value::as_u64) {
+        opts.deadline = std::time::Duration::from_secs(n.clamp(1, 600));
+    }
+    if let Some(q) = args.get("min_quality").and_then(Value::as_f64) {
+        opts.min_quality = q.clamp(0.0, 1.0) as f32;
+    }
+    // v4 phase 3: dataset mode is output-format only.
+    if args
+        .get("dataset")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        opts.dataset = true;
+    }
+    opts
+}
+
 /// Queued URLs shown in the debug block. The queue itself holds up to
 /// `crawl::frontier::MAX_QUEUE`; the response shows the head and says
 /// how many there are.
@@ -585,12 +633,15 @@ pub(super) fn render_crawl_result(
     let next_action = compute_crawl_next_action(result);
     let mut structured = json!({
         "ok": true,
+        "unchanged_pages": result.skipped.iter().filter(|(_, why)| why == "unchanged since last crawl").count(),
         "seed": result.seed,
         "complete": crawl_complete(result, requested_mode),
+        "inventory": { "complete": result.inventory.complete, "source": result.inventory.source, "limit": result.inventory.limit },
         "pages": result.pages.iter().filter(|p| !p.duplicate).map(|p| json!({
             "url": p.url,
             "lastmod": p.lastmod,
-            "content_complete": p.next_offset.is_none() && p.partial.is_none(),
+            "content_complete": p.next_offset.is_none() && p.partial.is_none() && !p.focus.as_ref().is_some_and(|f| f.omitted),
+            "focus": p.focus,
             "partial": p.partial,
             "next_offset": p.next_offset,
         })).collect::<Vec<_>>(),
@@ -598,6 +649,14 @@ pub(super) fn render_crawl_result(
     });
     if requested_mode != CrawlMode::Content {
         structured["map"] = json!(result.map);
+    } else {
+        structured.as_object_mut().unwrap().remove("inventory");
+    }
+    if structured["unchanged_pages"] == 0 {
+        structured
+            .as_object_mut()
+            .unwrap()
+            .remove("unchanged_pages");
     }
     if requested_mode == CrawlMode::Map {
         structured.as_object_mut().unwrap().remove("pages");
@@ -668,6 +727,7 @@ pub(super) fn render_crawl_dataset(
                 "fetched_at": p.fetched_at,
                 "lastmod": p.lastmod,
                 "parent": p.parent,
+                "focus": p.focus,
             })
         })
         .collect();
@@ -687,12 +747,13 @@ pub(super) fn render_crawl_dataset(
     let next_action = compute_crawl_next_action(result);
     let mut structured = json!({
         "ok": true,
+        "unchanged_pages": result.skipped.iter().filter(|(_, why)| why == "unchanged since last crawl").count(),
         "seed": result.seed,
         "dataset": true,
         // Schema marker (v4 F). Row shape: url/title/kind/markdown/
         // chars/fetched_at/lastmod/parent. Bump on any row-field change
         // so downstream parsers can fail closed.
-        "dataset_version": 1,
+        "dataset_version": 2,
         "rows": rows.len(),
         // Summed row chars so CLI/MCP summaries report real volume in
         // dataset mode (the JSON mode's pages[] is absent here).
@@ -701,19 +762,28 @@ pub(super) fn render_crawl_dataset(
             .filter_map(|r| r.get("chars").and_then(|c| c.as_u64()))
             .sum::<u64>(),
         "complete": crawl_complete(result, requested_mode),
+        "inventory": { "complete": result.inventory.complete, "source": result.inventory.source, "limit": result.inventory.limit },
         "stop": format!("{:?}", result.stop),
     });
     let partial_pages = result
         .pages
         .iter()
-        .filter(|p| !p.duplicate && (p.next_offset.is_some() || p.partial.is_some()))
-        .map(|p| json!({"url": p.url, "next_offset": p.next_offset, "partial": p.partial}))
+        .filter(|p| !p.duplicate && (p.next_offset.is_some() || p.partial.is_some() || p.focus.as_ref().is_some_and(|f| f.omitted)))
+        .map(|p| json!({"url": p.url, "next_offset": p.next_offset, "partial": p.partial, "focus": p.focus}))
         .collect::<Vec<_>>();
     if !partial_pages.is_empty() {
         structured["partial_pages"] = json!(partial_pages);
     }
     if requested_mode != CrawlMode::Content {
         structured["map"] = json!(result.map);
+    } else {
+        structured.as_object_mut().unwrap().remove("inventory");
+    }
+    if structured["unchanged_pages"] == 0 {
+        structured
+            .as_object_mut()
+            .unwrap()
+            .remove("unchanged_pages");
     }
     if let Some(resume) = &result.resume {
         structured["resume"] = json!(resume);
@@ -829,6 +899,27 @@ pub(super) fn compute_crawl_next_action(result: &crate::crawl::CrawlResult) -> S
         );
     }
 
+    if result.pages.is_empty()
+        && !result.map.is_empty()
+        && !result.inventory.complete
+        && result.stop == StopReason::FrontierEmpty
+    {
+        return if result.inventory.source == "seed-links" {
+            "inventory contains only links observed on the seed page; site-wide completeness is unknown. Use mode=content to follow the reachable scope.".into()
+        } else {
+            "published inventory is partial because discovery hit a safety bound or an unavailable sitemap; narrow the scope or use mode=content.".into()
+        };
+    }
+    if result.pages.is_empty()
+        && !result.skipped.is_empty()
+        && result
+            .skipped
+            .iter()
+            .all(|(_, why)| why == "unchanged since last crawl" || why.contains("duplicate"))
+    {
+        return "no source changes found in the pages rechecked; unchanged pages were omitted"
+            .into();
+    }
     // 0 pages : diagnose why.
     if result.pages.is_empty() && result.map.is_empty() {
         // Policy rows first, and out of the substring tests below: their
@@ -892,6 +983,7 @@ pub(super) fn compute_crawl_next_action(result: &crate::crawl::CrawlResult) -> S
         StopReason::DepthLimit => {
             "crawl hit the depth limit. Increase max_depth to discover more pages.".into()
         }
+        StopReason::InventoryLimit => "URL inventory was capped; increase map_limit or narrow focus/include_paths. Discovery has a 100000-URL and 32-sitemap safety bound.".into(),
         StopReason::FrontierEmpty => String::new(), // normal completion
     }
 }
@@ -899,9 +991,10 @@ pub(super) fn compute_crawl_next_action(result: &crate::crawl::CrawlResult) -> S
 fn crawl_complete(result: &crate::crawl::CrawlResult, mode: CrawlMode) -> bool {
     matches!(result.stop, crate::crawl::StopReason::FrontierEmpty)
         && if mode == CrawlMode::Map {
-            !result.map.is_empty()
+            !result.map.is_empty() && result.inventory.complete
         } else {
-            (!result.pages.is_empty() || !result.skipped.is_empty())
+            (mode == CrawlMode::Content || result.inventory.complete || result.inventory.source == "seed-links")
+                && (!result.pages.is_empty() || !result.skipped.is_empty())
                 && result
                     .pages
                     .iter()
@@ -973,6 +1066,11 @@ mod crawl_output_contract_tests {
     #[test]
     fn wave450_map_inventory_is_model_state_without_false_404() {
         let mut result = CrawlResult {
+            inventory: crate::crawl::InventoryStatus {
+                complete: true,
+                source: "sitemap",
+                limit: 1000,
+            },
             seed: "https://example.com/docs/".into(),
             pages: vec![],
             queued: vec![],
@@ -1003,6 +1101,7 @@ mod crawl_output_contract_tests {
     #[test]
     pub(super) fn crawl_renders_page_identity_once_and_keeps_resume_as_state() {
         let page = CrawlPage {
+            focus: None,
             url: "https://example.com/docs/page".into(),
             title: "Evidence page".into(),
             kind: ContentKind::Article,
@@ -1018,6 +1117,11 @@ mod crawl_output_contract_tests {
             fetched_at: 1_770_000_000,
         };
         let result = CrawlResult {
+            inventory: crate::crawl::InventoryStatus {
+                complete: true,
+                source: "sitemap",
+                limit: 1000,
+            },
             seed: "https://example.com/docs/".into(),
             pages: vec![page],
             queued: vec![],
@@ -1055,6 +1159,11 @@ mod crawl_output_contract_tests {
     #[test]
     fn the_queued_list_in_the_response_is_a_bounded_preview() {
         let result = CrawlResult {
+            inventory: crate::crawl::InventoryStatus {
+                complete: true,
+                source: "sitemap",
+                limit: 1000,
+            },
             seed: "https://example.com/".into(),
             pages: vec![],
             queued: (0..5_000)
@@ -1085,6 +1194,7 @@ mod crawl_output_contract_tests {
 
     fn dataset_fixture() -> crate::crawl::CrawlResult {
         let page = |url: &str, title: &str, md: &str, dup: bool| CrawlPage {
+            focus: None,
             url: url.into(),
             title: title.into(),
             kind: crate::extract::ContentKind::Article,
@@ -1100,6 +1210,11 @@ mod crawl_output_contract_tests {
             fetched_at: 1_770_000_000,
         };
         crate::crawl::CrawlResult {
+            inventory: crate::crawl::InventoryStatus {
+                complete: true,
+                source: "sitemap",
+                limit: 1000,
+            },
             seed: "https://example.com/docs/".into(),
             pages: vec![
                 page(
@@ -1151,7 +1266,7 @@ mod crawl_output_contract_tests {
         assert_eq!(row0["fetched_at"], 1_770_000_000u64);
         assert_eq!(out["structuredContent"]["rows"], 2);
         assert_eq!(out["structuredContent"]["dataset"], true);
-        assert_eq!(out["structuredContent"]["dataset_version"], 1);
+        assert_eq!(out["structuredContent"]["dataset_version"], 2);
         assert_eq!(out["structuredContent"]["complete"], false);
         // Skipped pages surface in debug, never as rows.
         assert_eq!(
@@ -1206,6 +1321,11 @@ mod crawl_output_contract_tests {
 
     fn empty_result() -> CrawlResult {
         CrawlResult {
+            inventory: crate::crawl::InventoryStatus {
+                complete: true,
+                source: "sitemap",
+                limit: 1000,
+            },
             seed: "https://example.com/docs/".into(),
             pages: vec![],
             queued: vec![],
@@ -1629,7 +1749,10 @@ mod crawl_output_contract_tests {
         assert!(live.seed_failure.is_none());
         assert!(!live.map.is_empty());
         let rendered = render_crawl_result(&live, CrawlMode::Map, false);
-        assert_eq!(rendered["structuredContent"]["complete"], true);
+        assert_eq!(
+            rendered["structuredContent"]["complete"], false,
+            "seed links cannot prove the entire site inventory"
+        );
     }
 
     // Installs a ruleset into the process (crate::config::install) and
@@ -1710,5 +1833,41 @@ mod crawl_output_contract_tests {
             !allowed_token.exists(),
             "a resumed crawl consumes its token"
         );
+    }
+    #[test]
+    fn reliability_nxdomain_during_robots_check_is_permanent() {
+        let mut failed = seed_failure(0, None);
+        failed.robots = Some(crate::crawl::RobotsRefusal::Unreachable);
+        failed.error = Some("network.dns: name or service not known".into());
+        let error = super::seed_failure_error(&failed, None);
+        assert_eq!(error["errorKind"], "permanent");
+        assert_eq!(error["structuredContent"]["code"], "network.dns");
+        assert!(
+            error["structuredContent"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("not known")
+        );
+        assert!(
+            !error["structuredContent"]["next_action"]
+                .as_str()
+                .unwrap()
+                .contains("respect_robots")
+        );
+        failed.error = Some("network.dns_timeout: temporary resolver failure".into());
+        assert_eq!(
+            super::seed_failure_error(&failed, None)["errorKind"],
+            "transient"
+        );
+    }
+    #[test]
+    fn reliability_small_tool_limits_are_not_silently_raised() {
+        let opts = super::crawl_options(
+            &json!({"per_page_max":100,"max_total_chars":500,"deadline_s":3,"map_limit":15000}),
+        );
+        assert_eq!(opts.per_page_max, 100);
+        assert_eq!(opts.max_total_chars, 500);
+        assert_eq!(opts.deadline, Duration::from_secs(3));
+        assert_eq!(opts.map_cap, 15000);
     }
 }

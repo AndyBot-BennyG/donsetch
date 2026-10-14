@@ -540,6 +540,17 @@ impl GhostManager {
             let mut st = crate::ghost::cache::GhostState::load();
             st.note_pool_served();
         }
+        if let Some(ghost) = guard.ghost.as_mut()
+            && let Err(error) = ghost.refresh_session_vault(host).await
+        {
+            if let Some(mut old) = guard.ghost.take() {
+                old.kill().await;
+            }
+            guard.key = None;
+            guard.host = None;
+            guard.wire = None;
+            return Err(error);
+        }
         {
             let mut snaps = self.meta.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(snap) = snaps.get_mut(idx) {

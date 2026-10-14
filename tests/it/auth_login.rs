@@ -368,7 +368,7 @@ fn commit_login_groups_per_domain_and_skips_noise() {
         cookie(".g2.test", "t", "w", None),
         cookie(".g1.test", "tracker", "x", Some(999_999)),
     ];
-    let (domains, _probes) = auth::commit_login(&cookies, false, None, None);
+    let (domains, _probes) = auth::commit_login(&cookies, false, None, None).unwrap();
     assert!(domains.contains(&"g1.test".to_string()));
     assert!(domains.contains(&"g2.test".to_string()));
     // Registry only counts the worthy subset.
@@ -457,4 +457,258 @@ fn logout_wipes_the_tier1_echo() {
         state.render_for("https://beta.test/page").is_some(),
         "logout must not evict renders of unrelated domains"
     );
+}
+
+// #367: explicitly selected opaque persistent cookies must survive commit,
+// reload and replay, including independent values at different paths.
+#[test]
+fn explicit_login_keeps_opaque_persistent_cookies_and_paths() {
+    isolate_state();
+    let mut settings = cookie(
+        ".fbtest.example",
+        "xs",
+        "settings-secret",
+        Some(2_000_000_000),
+    );
+    settings.path = "/settings".into();
+    let cookies = vec![
+        cookie(
+            ".fbtest.example",
+            "c_user",
+            "user-secret",
+            Some(2_000_000_000),
+        ),
+        cookie(".fbtest.example", "xs", "root-secret", Some(2_000_000_000)),
+        settings,
+        cookie(".fbtest.example", "_ga", "junk", None),
+        cookie(
+            ".unrelated.example",
+            "xs",
+            "foreign-secret",
+            Some(2_000_000_000),
+        ),
+    ];
+    let _ = auth::commit_login(&cookies, false, Some("fbtest.example"), None);
+    let vault = load_session_cookies();
+    assert_eq!(
+        vault.len(),
+        3,
+        "opaque cookies, not junk/foreign: {vault:?}"
+    );
+    assert!(vault.iter().any(|c| c.name == "c_user"));
+    assert_eq!(vault.iter().filter(|c| c.name == "xs").count(), 2);
+    let reg = AuthRegistry::load();
+    assert_eq!(reg.get("fbtest.example").unwrap().cookie_count, 3);
+    assert!(
+        !std::fs::read_to_string(donsetch::paths::cache_dir().join("auth-state.json"))
+            .unwrap()
+            .contains("secret")
+    );
+}
+
+#[test]
+fn public_homepage_does_not_verify_a_login() {
+    isolate_state();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        let mut buf = [0; 4096];
+        let _ = s.read(&mut buf);
+        let body = "<html><form><input type=password>Sign in</form></html>";
+        write!(
+            s,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    });
+    let p = auth::probe_domain(
+        "127.0.0.1",
+        &[cookie("127.0.0.1", "presence", "1", None)],
+        Some(port),
+    )
+    .unwrap();
+    assert!(!p.ok, "a public HTTP 200 does not prove authentication");
+    server.join().unwrap();
+}
+
+#[test]
+fn explicit_login_survives_automatic_harvest_and_stale_daemon_save() {
+    isolate_state();
+    let mut stale = GhostState::load();
+    let cookies: Vec<_> = (0..70)
+        .map(|i| {
+            cookie(
+                ".opaque.test",
+                &format!("opaque{i}"),
+                "secret",
+                Some(2_000_000_000),
+            )
+        })
+        .collect();
+    auth::commit_login(&cookies, false, Some("opaque.test"), None).unwrap();
+    store_session_cookies(&[cookie(
+        ".opaque.test",
+        "opaque0",
+        "rotated",
+        Some(2_000_000_000),
+    )]);
+    stale.save();
+    let vault = load_session_cookies();
+    assert_eq!(
+        vault.len(),
+        70,
+        "automatic cap or stale snapshot erased explicit login"
+    );
+    assert_eq!(
+        vault.iter().find(|c| c.name == "opaque0").unwrap().value,
+        "rotated"
+    );
+}
+
+#[test]
+fn failed_cli_import_is_nonzero_and_never_reports_saved() {
+    isolate_state();
+    let root = donsetch::paths::cache_dir();
+    std::fs::create_dir_all(root.join("ghost-state.json")).unwrap();
+    let file = root.join("cookies.txt");
+    std::fs::write(
+        &file,
+        ".failure.test\tTRUE\t/\tFALSE\t1999999999\tc_user\tsecret\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_donsetch"))
+        .args([
+            "login",
+            "--import",
+            file.to_str().unwrap(),
+            "failure.test",
+            "--no-probe",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("Imported:") && !stdout.contains("replay"),
+        "{stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("not saved"), "{stderr}");
+    assert!(!stderr.contains("secret"));
+}
+
+#[test]
+fn explicit_import_replays_opaque_cookies_to_cookie_gated_http() {
+    isolate_state();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let file = donsetch::paths::cache_dir().join("opaque.txt");
+    std::fs::write(&file, "127.0.0.1\tFALSE\t/\tFALSE\t1999999999\tc_user\tdummyuser\n127.0.0.1\tFALSE\t/\tFALSE\t1999999999\txs\tdummysession\n").unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_donsetch"))
+        .args([
+            "login",
+            "--import",
+            file.to_str().unwrap(),
+            "127.0.0.1",
+            "--no-probe",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("c_user, xs"));
+    let server = std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut buf = [0; 8192];
+        let n = s.read(&mut buf).unwrap();
+        let request = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            request.contains("c_user=dummyuser") && request.contains("xs=dummysession"),
+            "{request}"
+        );
+        s.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nOPAQUE-SUCCESS",
+        )
+        .unwrap();
+    });
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let f = new_fetcher();
+        f.reset_to(&load_session_cookies()).await;
+        let r = f
+            .fetch(&format!("http://127.0.0.1:{port}/private"))
+            .await
+            .unwrap();
+        assert_eq!(r.body, b"OPAQUE-SUCCESS");
+    });
+    server.join().unwrap();
+}
+
+#[test]
+fn unreadable_vault_refuses_login_before_launch_and_preserves_existing_bytes() {
+    isolate_state();
+    let path = donsetch::paths::cache_dir().join("ghost-state.json");
+    let original = b"malformed-OWNED-SECRET-DO-NOT-LOG";
+    std::fs::write(&path, original).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_donsetch"))
+        .args(["login", "example.com"])
+        .env("DONSETCH_BROWSER__CHROMIUM_PATH", "/no-such-owned-browser")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("login vault is unreadable"), "{stderr}");
+    assert!(!stderr.contains("OWNED-SECRET"));
+    assert!(out.stdout.is_empty(), "browser launch was reached");
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
+#[test]
+fn explicit_relogin_blocks_old_browser_harvest_and_accepts_new_rotation() {
+    isolate_state();
+    use donsetch::ghost::cache::store_login_cookies;
+    let original = cookie(".relogin.test", "xs", "first", None);
+    store_login_cookies(std::slice::from_ref(&original)).unwrap();
+    let first = GhostState::load();
+    let mut replacement = original.clone();
+    replacement.value = "second".into();
+    store_login_cookies(std::slice::from_ref(&replacement)).unwrap();
+    let second = GhostState::load();
+    assert!(second.vault_epoch > first.vault_epoch);
+    assert_ne!(first.auth_revision, second.auth_revision);
+    assert_ne!(first.session_revision, second.session_revision);
+    let barrier = second.profiles["relogin.test"].session_cleared_epoch;
+    assert!(barrier > first.vault_epoch && barrier < second.vault_epoch);
+    replacement.value = "rotated".into();
+    let fresh = vec![replacement.clone()];
+    store_session_cookies(&fresh);
+    assert_eq!(load_session_cookies(), vec![replacement]);
+    assert_eq!(GhostState::load().auth_revision, second.auth_revision);
+}
+
+#[test]
+fn cached_account_document_cannot_survive_or_resurrect_after_relogin() {
+    isolate_state();
+    use donsetch::ghost::cache::store_login_cookies;
+    let mut c = cookie(".account.test", "xs", "first", None);
+    store_login_cookies(std::slice::from_ref(&c)).unwrap();
+    let mut old = GhostState::load();
+    let url = "https://account.test/private";
+    old.record_render(url, "<p>FIRST ACCOUNT</p>");
+    let stamp = old.renders[url].session_stamp.clone();
+    assert!(old.render_for(url).is_some());
+    c.value = "second".into();
+    store_login_cookies(&[c]).unwrap();
+    assert!(old.render_for(url).is_none());
+    // An already-running render may finish after the login write. It must
+    // carry its original session identity rather than the latest disk epoch.
+    old.record_render_session(url, "<p>OLD IN-FLIGHT ACCOUNT</p>", &stamp);
+    assert!(old.render_for(url).is_none());
+    assert!(GhostState::load().render_for(url).is_none());
 }

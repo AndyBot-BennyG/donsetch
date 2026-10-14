@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::ghost::cache::{CookieRecord, is_session_worthy, now, store_session_cookies};
+use crate::ghost::cache::{CookieRecord, is_session_usable, now, store_login_cookies};
 
 /// Metadata for one authenticated domain. Deliberately free of any
 /// cookie value: serialization of this struct must never leak a
@@ -29,7 +29,7 @@ pub struct AuthState {
     pub expires_max: Option<u64>,
     /// Masked cookie names (names only, never values).
     pub cookie_names: Vec<String>,
-    /// None = never probed.
+    /// None = authentication not verified (including a reachable public home page).
     pub verified: Option<bool>,
     pub last_probe: Option<u64>,
 }
@@ -41,62 +41,71 @@ pub struct AuthRegistry {
 
 impl AuthRegistry {
     pub fn load() -> Self {
-        let p = auth_path();
-        match std::fs::read_to_string(&p) {
-            Ok(s) => match serde_json::from_str(&s) {
-                Ok(r) => r,
-                Err(_) => {
-                    // Corrupt registry: quarantine it, start clean.
-                    let _ = std::fs::rename(&p, p.with_extension("json.corrupt"));
-                    Self::default()
-                }
-            },
-            Err(_) => Self::default(),
+        Self::load_checked().unwrap_or_else(|e| {
+            crate::diag!("[auth] {e}");
+            Self::default()
+        })
+    }
+
+    /// Read metadata without overwriting an unreadable existing registry.
+    pub fn load_checked() -> Result<Self, String> {
+        let bytes = match std::fs::read(auth_path()) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => return Err(format!("login registry could not be read: {e}")),
+        };
+        let mut registry: Self = serde_json::from_slice(&bytes).map_err(|_| {
+            "login registry is malformed; preserve it and repair before changing sessions"
+                .to_string()
+        })?;
+        // Historical positive probes established public home-page reachability only.
+        for state in registry.domains.values_mut() {
+            if state.verified == Some(true) {
+                state.verified = None;
+            }
         }
+        Ok(registry)
     }
 
     /// Atomic save; 0600 is set BEFORE content lands on disk so the
     /// registry is never world-readable, even transiently.
     pub fn save(&self) {
+        if let Err(e) = self.save_checked() {
+            crate::diag!("[auth] registry save failed: {e}");
+        }
+    }
+
+    fn save_checked(&self) -> Result<(), String> {
         #[cfg(not(test))]
         {
             if crate::config::cfg().state.no_disk_state {
-                return;
+                return Err("login requires disk state".into());
             }
         }
         let p = auth_path();
+        let json = serde_json::to_vec(self).map_err(|e| e.to_string())?;
         if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let Ok(json) = serde_json::to_string(self) else {
-            return;
-        };
-        let tmp = p.with_extension("json.tmp");
-        let write_ok = {
-            #[cfg(unix)]
-            {
-                use std::io::Write;
-                use std::os::unix::fs::OpenOptionsExt;
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&tmp)
-                    .and_then(|mut f| f.write_all(json.as_bytes()))
-                    .map(|_| true)
-                    .unwrap_or(false)
-            }
-            #[cfg(not(unix))]
-            {
-                std::fs::write(&tmp, &json).is_ok()
-            }
-        };
-        if !write_ok {
+        let tmp = p.with_extension(format!("json.{}.tmp", std::process::id()));
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let result = (|| -> std::io::Result<()> {
+            let mut file = options.open(&tmp)?;
+            file.write_all(&json)?;
+            file.sync_all()?;
+            std::fs::rename(&tmp, &p)
+        })();
+        if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
-            return;
         }
-        let _ = std::fs::rename(&tmp, &p);
+        result.map_err(|e| format!("login registry was not saved: {e}"))
     }
 
     pub fn get(&self, domain: &str) -> Option<&AuthState> {
@@ -106,6 +115,11 @@ impl AuthRegistry {
     /// Record (or refresh) a login for `domain` from the stored
     /// cookie set. `verified` = post-login probe verdict.
     pub fn record_login(&mut self, domain: &str, cookies: &[CookieRecord], verified: Option<bool>) {
+        self.update_login(domain, cookies, verified);
+        self.save();
+    }
+
+    fn update_login(&mut self, domain: &str, cookies: &[CookieRecord], verified: Option<bool>) {
         let t = now();
         let mut names: Vec<String> = cookies
             .iter()
@@ -113,7 +127,7 @@ impl AuthRegistry {
             .filter(|n| !n.is_empty())
             .collect();
         names.sort();
-        names.truncate(8);
+        names.dedup();
 
         let exp: Vec<Option<u64>> = cookies.iter().map(|c| c.expires_at).collect();
         let entry = AuthState {
@@ -131,18 +145,24 @@ impl AuthRegistry {
             }),
         };
         self.domains.insert(domain.to_string(), entry);
-        self.save();
     }
 
     /// Remove one domain from the registry AND from the cookie
     /// vault (logout). Returns true only if the domain existed.
     pub fn remove(&mut self, domain: &str) -> bool {
-        let existed_registry = self.domains.remove(domain).is_some();
-        if existed_registry {
-            self.save();
+        self.remove_checked(domain).unwrap_or_else(|e| {
+            crate::diag!("[auth] logout failed: {e}");
+            false
+        })
+    }
+
+    pub fn remove_checked(&mut self, domain: &str) -> Result<bool, String> {
+        let removed_vault = crate::ghost::cache::clear_session_cookies_for_checked(domain)?;
+        let existed = self.domains.remove(domain).is_some();
+        if existed {
+            self.save_checked()?;
         }
-        let removed_vault = crate::ghost::cache::clear_session_cookies_for(domain);
-        existed_registry || removed_vault
+        Ok(existed || removed_vault)
     }
 
     pub fn sorted(&self) -> Vec<(String, AuthState)> {
@@ -209,6 +229,9 @@ pub fn normalize_target(input: &str) -> Result<NormalizedTarget, String> {
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("URLs with embedded credentials are not accepted: use a bare domain".into());
     }
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("login target must be HTTP(S)".into());
+    }
     let host = parsed
         .host_str()
         .ok_or_else(|| "missing host".to_string())?
@@ -260,6 +283,10 @@ fn probe_target(domain: &str, port_hint: Option<u16>) -> (String, u16) {
             p,
         );
     }
+    let bare = domain.trim_matches(['[', ']']);
+    if bare.parse::<std::net::Ipv6Addr>().is_ok() {
+        return (bare.to_string(), 443);
+    }
     let mut parts = domain.rsplitn(2, ':');
     let first = parts.next().unwrap_or(domain);
     if let (Some(rest), Ok(port)) = (parts.next(), first.parse::<u16>()) {
@@ -281,6 +308,8 @@ fn cookie_host(c: &CookieRecord) -> String {
 /// apex cookies, wildcard subdomain cookies, and host-only cookies
 /// on the exact host.
 pub fn cookie_belongs_to(domain: &str, host: &str) -> bool {
+    let domain = domain.trim_matches(['[', ']']).to_ascii_lowercase();
+    let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
     host == domain || host.ends_with(&format!(".{domain}")) || domain.ends_with(&format!(".{host}"))
 }
 
@@ -334,10 +363,12 @@ pub fn parse_netscape(content: &str) -> Vec<CookieRecord> {
 
 /// POST-LOGIN PROBE: one GET of the home page carrying the stored
 /// cookies. A wall (redirect to /login|signin|auth, 401/403, or an
-/// obvious interstitial) flips the verdict to unverified instead of
-/// claiming success. Only loopback targets use plain HTTP.
+/// access refusal) is negative evidence; a public success is inconclusive.
+/// Only loopback targets use plain HTTP.
 pub struct ProbeResult {
     pub ok: bool,
+    /// None = reachable or inconclusive, never authenticated proof.
+    pub verified: Option<bool>,
     pub note: String,
 }
 
@@ -349,16 +380,21 @@ pub fn probe_domain(
     let (host, port) = probe_target(domain, port_hint);
     let loopback = host == "localhost" || host == "127.0.0.1" || host == "::1";
     let scheme = if loopback { "http" } else { "https" };
-    let url = if !port_hint.is_some() && (port == 443 || (loopback && port == 80)) {
-        format!("{scheme}://{host}/")
+    let display_host = if host.contains(':') {
+        format!("[{host}]")
     } else {
-        format!("{scheme}://{host}") + &format!(":{port}/")
+        host.clone()
     };
-    let cookie_header = cookies
-        .iter()
-        .map(|c| format!("{}={}", c.name, c.value))
-        .collect::<Vec<_>>()
-        .join("; ");
+    let url = if !port_hint.is_some() && (port == 443 || (loopback && port == 80)) {
+        format!("{scheme}://{display_host}/")
+    } else {
+        format!("{scheme}://{display_host}") + &format!(":{port}/")
+    };
+    let mut jar = crate::fetch::cookies::CookieJar::new();
+    for cookie in cookies {
+        jar.store_raw(cookie);
+    }
+    let cookie_header = jar.header_for(&host, "/", !loopback).unwrap_or_default();
 
     // Dedicated plain thread: `reqwest::blocking` panics when built or
     // dropped on a thread that already has a tokio runtime context,
@@ -377,7 +413,7 @@ pub fn probe_domain(
 fn probe_once(url: &str, cookie_header: &str) -> Result<ProbeResult, String> {
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(4))
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(5))
         .user_agent(format!(
             "donsetch/{}-login-probe",
             env!("CARGO_PKG_VERSION")
@@ -389,22 +425,39 @@ fn probe_once(url: &str, cookie_header: &str) -> Result<ProbeResult, String> {
         .get(url)
         .header(reqwest::header::COOKIE, cookie_header)
         .send()
-        .map_err(|e| format!("probe failed: {e}"))?;
+        .map_err(|e| format!("probe failed: {}", e.without_url()))?;
     let status = resp.status();
     let final_url = resp.url().clone();
     // Consume the body eagerly: proves the endpoint served content
     // and lets the connection close cleanly.
-    let _ = resp.bytes();
+    // Do not buffer an unbounded public home page just to test reachability.
+    drop(resp);
     let final_path = final_url.path().to_ascii_lowercase();
 
     let walled = final_path.contains("/login")
         || final_path.contains("/signin")
         || final_path.contains("/sso")
         || (status.as_u16() == 401 || status.as_u16() == 403);
-    let ok = !walled && status.is_success();
-    let note = format!("HTTP {status} -> {}", truncate(final_url.as_str(), 80));
-    Ok(ProbeResult { ok, note })
+    let verified = walled.then_some(false);
+    let note = format!(
+        "HTTP {status} at {}://{}: {}",
+        final_url.scheme(),
+        final_url.host_str().unwrap_or("unknown"),
+        if walled {
+            "login/access wall; session unverified"
+        } else {
+            "reachability only; authentication unverified"
+        }
+    );
+    Ok(ProbeResult {
+        ok: false,
+        verified,
+        note,
+    })
 }
+
+/// Stored domain names and reachability observations; cookie values are excluded.
+pub type LoginCommit = (Vec<String>, Vec<(String, bool, String)>);
 
 /// Post-login bookkeeping shared by interactive + import paths:
 /// store cookies, group per-domain metadata, optionally probe.
@@ -416,20 +469,45 @@ pub fn commit_login(
     probe: bool,
     probe_key: Option<&str>,
     probe_port: Option<u16>,
-) -> (Vec<String>, Vec<(String, bool, String)>) {
+) -> Result<LoginCommit, String> {
     let mut cookies = cookies.to_vec();
-    cookies.retain(is_session_worthy);
-    store_session_cookies(&cookies);
+    cookies.retain(|c| {
+        is_session_usable(c) && probe_key.is_none_or(|k| cookie_belongs_to(k, &cookie_host(c)))
+    });
+    if cookies.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let mut reg = AuthRegistry::load_checked()?;
+    store_login_cookies(&cookies)?;
 
     // Group by domain for the registry.
     let mut by_domain: BTreeMap<String, Vec<CookieRecord>> = BTreeMap::new();
     for c in &cookies {
-        by_domain.entry(cookie_host(c)).or_default().push(c.clone());
+        by_domain
+            .entry(
+                probe_key
+                    .map(String::from)
+                    .unwrap_or_else(|| cookie_host(c)),
+            )
+            .or_default()
+            .push(c.clone());
     }
     let mut domains = Vec::new();
     let mut probes = Vec::new();
-    for (domain, dom_cookies) in by_domain {
-        let probe_this = probe && probe_key.is_none_or(|k| k == domain);
+    let vaulted = crate::ghost::cache::load_session_cookies();
+    for (domain, _) in by_domain {
+        let dom_cookies: Vec<_> = vaulted
+            .iter()
+            .filter(|c| {
+                if probe_key.is_some() {
+                    cookie_belongs_to(&domain, &cookie_host(c))
+                } else {
+                    cookie_host(c) == domain
+                }
+            })
+            .cloned()
+            .collect();
+        let probe_this = probe && probe_key.is_some_and(|k| k == domain);
         let verdict = if probe_this {
             match probe_domain(
                 &domain,
@@ -443,7 +521,7 @@ pub fn commit_login(
                 Ok(p) => {
                     let ok = p.ok;
                     probes.push((domain.clone(), ok, p.note));
-                    Some(ok)
+                    p.verified
                 }
                 Err(e) => {
                     probes.push((domain.clone(), false, e));
@@ -453,21 +531,11 @@ pub fn commit_login(
         } else {
             None
         };
-        let mut reg = AuthRegistry::load();
-        reg.record_login(&domain, &dom_cookies, verdict);
+        reg.update_login(&domain, &dom_cookies, verdict);
         domains.push(domain);
     }
-    (domains, probes)
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        let mut t: String = s.chars().take(max.saturating_sub(3)).collect();
-        t.push_str("...");
-        t
-    }
+    reg.save_checked()?;
+    Ok((domains, probes))
 }
 
 /// Human expiry rendering: "session", "in 3d", "in 2h", "expired".
@@ -623,5 +691,12 @@ other.test\tFALSE\t/\tFALSE\t1000000\tstale\tx
             probe_target("localhost", Some(4321)),
             ("localhost".into(), 4321)
         );
+    }
+    #[test]
+    fn reliability_ipv6_scope_and_probe_target_remain_ip_literals() {
+        assert_eq!(probe_target("[::1]", None), ("::1".into(), 443));
+        assert_eq!(probe_target("[::1]", Some(8137)), ("::1".into(), 8137));
+        assert!(cookie_belongs_to("[::1]", "::1"));
+        assert!(!cookie_belongs_to("[::1]", "::2"));
     }
 }

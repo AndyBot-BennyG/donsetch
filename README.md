@@ -358,6 +358,8 @@ fact-check. `source_type` identifies video, community, paper, reference,
 publisher, official, institutional, and general web sources from known hosts.
 It does not certify a page's claims or assign trust to lookalike domains.
 
+The diagnostic domain-profile route `cold` means ordinary HTTP without verified bot-wall clearance cookies. Repeated successful reads can stay on that route while reusing connections; it does not mean transport caching or learning failed.
+
 **Tier 3 bypass (opt-in).** When the ghost itself hits a hard wall, fetch falls back to Bright Data Web Unlocker if a key is configured (`donsetch keys add unlocker "<token>::<Web Unlocker zone>"`). It returns HTML into the normal extraction pipeline; a challenge or empty shell remains a failed fetch. Failures carry recovery guidance on the escalation trace. `donsetch doctor --deep` checks token access, zone name and product type for free; tokens without account-zone read permission report an unverified check. Successful responses are cached locally (URL and render-mode keyed, sliding 6h TTL, 200 entries); concurrent calls within one daemon share the cache. The daily cap counts every API attempt, including retries, and the whole operation shares one timeout. A timed-out paid request is not replayed automatically. Settings live in `[bypass]`: `donsetch config show`. See the [setup guide](docs/brightdata.md). DonSeTch works without it.
 
 <details>
@@ -390,7 +392,11 @@ Same-domain, best-first. Two phases: sitemap discovery (cheap URL inventory), th
 - **Crawl-shape**: frontier pops get a seeded reader-like jitter so repeated crawls never replay one identical, score-eager order into server logs. Ordering only, payloads untouched. Kill switch: `DONSETCH_NO_CRAWL_SHAPE=1`.
 - **Resume tokens**: a stopped crawl resumes in one call, valid 30 minutes, survives restarts.
 - **Near-duplicate detection**: title plus first 200 chars, hashed.
-- **Honest stop reasons**: `FrontierEmpty`, `MaxPages`, `CharBudget`, `DepthLimit`, `Deadline`, `ThrottledOut`.
+- **Budgets**: `per_page_max` and `max_total_chars` honor positive character limits down to 1, including concurrent workers. `deadline_s` accepts 1-600 seconds and bounds discovery, page reads, browser handoffs and extraction. A sliced page carries `next_offset`; use `web_fetch` with that offset to continue it.
+- **Inventory**: `map_limit` controls returned URLs (default 120, up to 50,000). `inventory.complete=false` discloses output caps, unavailable sitemaps and discovery safety bounds (100,000 URLs, 32 sitemap reads). A map derived from seed-page links cannot establish site-wide completeness. Narrow `focus`/`include_paths` for large sites.
+- **Change tracking**: `since_last=true` rechecks sources, then suppresses unchanged pages using per-URL fingerprints from earlier fetches or crawls. Pagination does not prevent recording a full-source fingerprint; partial output never becomes full baseline text.
+- **Focus receipts**: page state records whether passages were omitted and the block counts. Dataset JSON Lines use `dataset_version:2`, adding the per-row focus receipt.
+- **Honest stop reasons**: `FrontierEmpty`, `MaxPages`, `CharBudget`, `DepthLimit`, `Deadline`, `ThrottledOut`, `Cancelled`, `InventoryLimit`. A drained frontier is complete only when the requested evidence was obtained without failures or excluded pages.
 - **Cross-process politeness**: one host-pace store shared by every crawler on the box, so two runs against one site do not double the rate.
 
 <div align="center">
@@ -722,9 +728,11 @@ donsetch login --import cookies.txt x.com   # servers and CI, Netscape format
 ```
 
 - Credentials never enter DonSeTch. It opens a real Chromium on your display in a dedicated profile, never the automation one. You type into the browser. No keystroke capture, no screenshots, no CDP attach until you press Enter.
-- Afterwards the cookies are harvested, filtered to session-worthy ones, and stored in the same 0600 vault the fetch engine already replays, so tier-1 fetches and tier-2 renders of that domain carry your login immediately, with no daemon restart. A post-login probe verifies wall detection (redirect to /login, 401/403) and surfaces it in `--list`.
+- Afterwards, cookies selected by your domain or explicit import are stored regardless of whether their names look like authentication tokens. Known analytics and clearance cookies, expired records and invalid values are excluded. Names and paths retain their identity, including opaque persistent names such as `c_user`, `xs` and `li_at`. Cookie values stay in the private vault; `Saved`/`Imported` lists names only. Tier-1 fetches and warm tier-2 browsers reload the session without a daemon restart. Login changes invalidate cached account documents; captures from older browsers cannot overwrite the replacement session.
+- A named-domain post-login probe checks reachability and reports login/access redirects as unverified. A public home-page HTTP 200 cannot prove authentication, so it never earns a verified checkmark. Multi-site saves avoid one probe per domain. Verify the actual protected page you need with `web_fetch`.
+- Failed writes and captures return an error instead of reporting success. EOF and Ctrl+C save nothing to the vault; `--fresh` waits for the exclusive profile lock before wiping it. The dedicated browser profile may retain its own cookies until cleared with `--fresh`.
 - The registry (`auth-state.json`) stores metadata only: names, counts, expiries, probe verdicts. Never values.
-- Multi-site: run bare `donsetch login`, sign into as many tabs as you like, press Enter once.
+- Multi-site: run bare `donsetch login`, sign into as many tabs as you like, press Enter once. New cookies and rotated values are captured, including opaque persistent cookies.
 
 ## 🐳 Docker
 

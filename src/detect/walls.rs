@@ -35,6 +35,21 @@ pub enum Verdict {
     SoftNotFound,
 }
 
+/// An already-classified wall with an active human-only widget. Ordinary
+/// articles and dormant vendor scripts must still receive normal treatment.
+pub fn human_verification_wall(body: &[u8], verdict: Verdict) -> bool {
+    if !matches!(verdict, Verdict::Challenge(_))
+        || !human_captcha(body)
+        || !matches!(detect_dom_smart(body), Verdict::Challenge(_))
+    {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&body[..body.len().min(512 * 1024)]);
+    let doc = scraper::Html::parse_document(&text);
+    let selector = scraper::Selector::parse("form#captcha-form, .g-recaptcha, .h-captcha, #px-captcha, iframe[src*='captcha-delivery'], iframe[src*='recaptcha'], iframe[src*='hcaptcha'], iframe[src*='arkoselabs']").expect("static captcha selectors");
+    doc.select(&selector).next().is_some()
+}
+
 /// Whether an HTTP denial warrants a browser observation. Explicit tier and
 /// deadline checks belong to the caller; this policy is shared by fetch/crawl.
 pub fn browser_recovery(
@@ -73,7 +88,7 @@ pub fn browser_recovery(
             return false;
         }
     }
-    if content_gate(body).is_some() {
+    if content_gate(body).is_some() || human_verification_wall(body, verdict) {
         return false;
     }
     matches!(verdict, Verdict::Challenge(_)) || (status == 403 && verdict == Verdict::Blocked)
@@ -1592,5 +1607,29 @@ mod gone_tests {
             detect(200, &[], b"<h1>Gone fishing</h1><p>We are open today.</p>"),
             Verdict::ContentOk
         );
+    }
+}
+
+#[cfg(test)]
+mod reliability_tests {
+    use super::*;
+    #[test]
+    fn human_widgets_skip_escalation_but_ordinary_articles_and_managed_walls_do_not() {
+        let wall = b"<title>Prove your humanity</title><h1>Prove your humanity</h1><form><div class='g-recaptcha'></div></form>";
+        let verdict = detect(403, &[], wall);
+        assert!(human_verification_wall(wall, verdict));
+        assert!(!browser_recovery(403, &[], wall, verdict));
+        let managed = b"<title>Just a moment...</title><script src='/cdn-cgi/challenge-platform/a.js'></script>";
+        let verdict = detect(403, &[], managed);
+        assert!(!human_verification_wall(managed, verdict));
+        assert!(browser_recovery(403, &[], managed, verdict));
+        let article = format!(
+            "<article><h1>CAPTCHA tutorial</h1><p>{}</p><div class='g-recaptcha'></div></article>",
+            "Useful original research. ".repeat(40)
+        );
+        assert!(!human_verification_wall(
+            article.as_bytes(),
+            detect(200, &[], article.as_bytes())
+        ));
     }
 }

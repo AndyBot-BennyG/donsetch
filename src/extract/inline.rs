@@ -11,6 +11,35 @@ pub fn markdown(el: ElementRef<'_>, base: &str, opts: &super::ExtractOptions) ->
     markdown_impl(el, base, opts, false)
 }
 
+/// Render an inline element including its own link/emphasis wrapper.
+pub fn element_markdown(
+    el: ElementRef<'_>,
+    base: &str,
+    opts: &super::ExtractOptions,
+) -> (String, f32) {
+    let (text, density) = markdown(el, base, opts);
+    let wrapped = match el.value().name() {
+        "a" if opts.include_links => el
+            .value()
+            .attr("href")
+            .and_then(|href| absolutize(base, href))
+            .map(|url| format!("[{text}]({})", strip_trackers(&url)))
+            .unwrap_or_else(|| text.clone()),
+        "strong" | "b" => format!("**{}**", escape_wrap_boundary(&text, '*')),
+        "em" | "i" => format!("*{}*", escape_wrap_boundary(&text, '*')),
+        "code" => format!("`{}`", plain(el).replace('`', "'")),
+        _ => text,
+    };
+    (
+        wrapped,
+        if el.value().name() == "a" {
+            1.0
+        } else {
+            density
+        },
+    )
+}
+
 /// `markdown` for a list item: its own content only. Nested
 /// `<ul>`/`<ol>` children are the caller's (rendered as indented
 /// items), not flattened into this item's line -- which had every

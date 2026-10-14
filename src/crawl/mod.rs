@@ -36,6 +36,7 @@ use sitemap::SitemapEntry;
 const SEED_NEIGHBOR_BOOST: f64 = 1.5;
 
 /// A fetched page as the orchestrator sees it.
+#[derive(Clone)]
 pub struct FetchedPage {
     /// Governor assignment that produced this page, including buffered reads.
     pub lane: String,
@@ -231,7 +232,9 @@ impl SeedPreflight {
     /// The failure the preflight saw, if the seed failed.
     fn failure(&self, seed: &str) -> Option<SeedFailure> {
         if let Some(refusal) = self.robots {
-            return Some(SeedFailure::from_robots(seed, refusal));
+            let mut failure = SeedFailure::from_robots(seed, refusal);
+            failure.error = self.page.as_ref().and_then(|p| p.error.clone());
+            return Some(failure);
         }
         match &self.page {
             Some(page) if !self.page_ok => Some(page.clone()),
@@ -392,6 +395,7 @@ impl Drop for WorkInFlight<'_> {
 
 /// One harvested crawl page.
 pub struct CrawlPage {
+    pub focus: Option<FocusStats>,
     pub url: String,
     pub title: String,
     pub kind: ContentKind,
@@ -431,9 +435,26 @@ pub enum StopReason {
     Cancelled,
     /// Host boxed us out (all lanes walled) : resume later.
     ThrottledOut,
+    /// Published inventory exceeded the output or discovery bound.
+    InventoryLimit,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct InventoryStatus {
+    pub complete: bool,
+    pub source: &'static str,
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FocusStats {
+    pub omitted: bool,
+    pub blocks_total: usize,
+    pub blocks_shown: usize,
 }
 
 pub struct CrawlResult {
+    pub inventory: InventoryStatus,
     pub seed: String,
     pub pages: Vec<CrawlPage>,
     /// URLs discovered but not fetched (budget/depth/scope).
@@ -967,11 +988,11 @@ impl Crawler {
                 buffered
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(robots_url, page);
+                    .insert(robots_url, page.clone());
                 let allowed = robots.allows_url(&seed_url);
                 if !allowed {
                     preflight = Some(SeedPreflight {
-                        page: None,
+                        page: Some(SeedFailure::from_page(&page, None)),
                         page_ok: false,
                         robots: Some(RobotsRefusal::of(&robots)),
                     });
@@ -1048,10 +1069,20 @@ impl Crawler {
         let seed_origin = sitemap::origin_of(&seed_url);
         let mut map: Vec<String> = Vec::new();
         let mut sitemap_entries: Vec<SitemapEntry> = Vec::new();
+        let mut inventory = InventoryStatus {
+            limit: opts.map_cap,
+            ..Default::default()
+        };
         let mut robots = sitemap::Robots::default();
         if opts.mode != CrawlMode::Content {
-            let (mut r, mut entries) =
-                sitemap::discover(&fetch, &seed_origin, opts.map_cap.saturating_mul(4)).await;
+            let discovery = sitemap::discover_inventory(&fetch, &seed_origin, 100_000).await;
+            inventory.source = if discovery.entries.is_empty() {
+                "seed-links"
+            } else {
+                "sitemap"
+            };
+            inventory.complete = discovery.complete;
+            let (mut r, mut entries) = (discovery.robots, discovery.entries);
             robots = sitemap::Robots::default();
             std::mem::swap(&mut robots, &mut r);
             // Newest first: lastmod-sorted sitemaps put fresh
@@ -1131,6 +1162,7 @@ impl Crawler {
                     .unwrap_or(std::cmp::Ordering::Equal)
                     .then_with(|| a.1.cmp(&b.1))
             });
+            inventory.complete &= ranked.len() <= opts.map_cap;
             map = ranked
                 .into_iter()
                 .take(opts.map_cap)
@@ -1202,7 +1234,11 @@ impl Crawler {
                 && let Some(render) = opts.render_html.as_ref()
                 && deadline_at.saturating_duration_since(Instant::now()) > Duration::from_secs(15)
             {
-                match render(seed.clone()).await {
+                match tokio::time::timeout_at(deadline_at.into(), render(seed.clone()))
+                    .await
+                    .ok()
+                    .flatten()
+                {
                     Some((html, final_url)) => {
                         let parsed = Url::parse(&final_url).unwrap_or_else(|_| seed_url.clone());
                         let base = extract_base_href(&html)
@@ -1232,9 +1268,6 @@ impl Crawler {
                 .map(|u| frontier::locale_canonical(u.path()))
                 .collect();
             for u in &candidates {
-                if map.len() >= opts.map_cap {
-                    break;
-                }
                 if !host_ok(u) {
                     continue;
                 }
@@ -1263,6 +1296,10 @@ impl Crawler {
                 if !seen_urls.insert(normalized.clone()) {
                     continue;
                 }
+                if map.len() >= opts.map_cap {
+                    inventory.complete = false;
+                    break;
+                }
                 map.push(normalized);
             }
             // Judged after the seed-link harvest and the render: a seed
@@ -1271,6 +1308,8 @@ impl Crawler {
             // there is no outcome to report and today's row stays.
             let stop = if Instant::now() >= deadline_at {
                 StopReason::Deadline
+            } else if !inventory.complete && map.len() >= opts.map_cap {
+                StopReason::InventoryLimit
             } else {
                 StopReason::FrontierEmpty
             };
@@ -1294,6 +1333,7 @@ impl Crawler {
                 Vec::new()
             };
             return Ok(CrawlResult {
+                inventory,
                 crawl_delay: robots.crawl_delay,
                 seed: seed.to_string(),
                 pages: Vec::new(),
@@ -1405,6 +1445,7 @@ impl Crawler {
 
         if queue.is_empty() {
             return Ok(CrawlResult {
+                inventory,
                 crawl_delay: robots.crawl_delay,
                 seed: seed.to_string(),
                 pages: Vec::new(),
@@ -1448,7 +1489,9 @@ impl Crawler {
         // any URL other than the seed was dequeued, and how the seed's
         // last attempt failed.
         let other_dequeued = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let seed_failed: Arc<Mutex<Option<SeedFailure>>> = Arc::new(Mutex::new(None));
+        let seed_failed: Arc<Mutex<Option<SeedFailure>>> = Arc::new(Mutex::new(
+            preflight.as_ref().and_then(|p| p.failure(&seed)),
+        ));
 
         let workers = opts.concurrency.max(1);
         let ghost_budget = Arc::new(AtomicUsize::new(GHOST_BUDGET));
@@ -1585,7 +1628,11 @@ impl Crawler {
                             }
                             break 'work;
                         }
-                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        tokio::time::sleep(
+                            Duration::from_millis(150)
+                                .min(deadline_at.saturating_duration_since(Instant::now())),
+                        )
+                        .await;
                         continue 'work;
                     };
                     let _active = WorkInFlight(&in_flight);
@@ -1652,10 +1699,16 @@ impl Crawler {
                         && !robots_allows(&fetch, &governor, &robots_cache, &parsed).await
                     {
                         if let Some(robots) = robots_cache.get(&sitemap::origin_of(&parsed)) {
-                            note_seed_failure(SeedFailure::from_robots(
-                                &item.url,
-                                RobotsRefusal::of(&robots),
-                            ));
+                            let mut failure =
+                                SeedFailure::from_robots(&item.url, RobotsRefusal::of(&robots));
+                            if is_seed_entry {
+                                failure.error = seed_failed
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .as_ref()
+                                    .and_then(|f| f.error.clone());
+                            }
+                            note_seed_failure(failure);
                         }
                         filtered_out.fetch_add(1, Ordering::Relaxed);
                         continue 'work;
@@ -1709,7 +1762,11 @@ impl Crawler {
                                     retries: item.retries,
                                     parent: item.parent.clone(),
                                 });
-                            tokio::time::sleep(Duration::from_millis(400)).await;
+                            tokio::time::sleep(
+                                Duration::from_millis(400)
+                                    .min(deadline_at.saturating_duration_since(Instant::now())),
+                            )
+                            .await;
                             continue 'work;
                         }
                         continue 'work;
@@ -1816,7 +1873,11 @@ impl Crawler {
                     // Transient retry: network errors (status 0) and
                     // 5xx non-challenge get requeued up to 2 times.
                     // Walls, 404s, 429s, and challenges are permanent.
-                    let is_transient = page.status == 0
+                    let is_transient = (page.status == 0
+                        && !page
+                            .error_hint
+                            .as_deref()
+                            .is_some_and(|e| e.starts_with("network.dns:")))
                         || (page.status >= 500 && !matches!(page.verdict, Verdict::Challenge(_)));
                     if is_transient && item.retries < 2 {
                         queue
@@ -1986,8 +2047,25 @@ impl Crawler {
                     // pool with a generous timeout (5 min) that covers large
                     // PDFs (a 28 MB archive.org PDF takes ~70s) while still
                     // preventing infinite hangs. HTML stays on the fast path.
-                    let extract_res =
-                        extract::extract_off_worker(body_bytes, body_ctype, &page_url, &eo).await;
+                    let extract_res = match tokio::time::timeout_at(
+                        deadline_at.into(),
+                        extract::extract_off_worker(body_bytes, body_ctype, &page_url, &eo),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => {
+                            queue
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .requeue(item.clone());
+                            *stop_flag
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                Some(StopReason::Deadline);
+                            break 'work;
+                        }
+                    };
                     let mut r = match extract_res {
                         Ok(r) => r,
                         Err(e) => {
@@ -2176,6 +2254,16 @@ impl Crawler {
                             &opts_worker.exclude_paths,
                         );
 
+                    let mut per_page_next = r.next_offset;
+                    if md.chars().count() > opts_worker.per_page_max {
+                        let cut = md
+                            .char_indices()
+                            .nth(opts_worker.per_page_max)
+                            .map(|(i, _)| i)
+                            .unwrap_or(md.len());
+                        md.truncate(cut);
+                        per_page_next = Some(cut.min(r.next_offset.unwrap_or(usize::MAX)));
+                    }
                     let mut chars = md.chars().count();
 
                     // v4 phase 3 delta recrawl: compare the freshly
@@ -2201,18 +2289,27 @@ impl Crawler {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push((page.url.clone(), "out of scope (navigation-only)".into()));
                     } else if unchanged {
-                        if r.next_offset.is_none()
-                            && r.partial.is_none()
+                        if r.partial.is_none()
+                            && !r.thin
                             && let Some(rec) = &opts_worker.on_page
                         {
-                            rec(&page.url, r.fingerprint.as_deref(), &md, r.title.as_deref());
+                            rec(
+                                &page.url,
+                                r.fingerprint.as_deref(),
+                                if per_page_next.is_none() && !r.focus_omitted {
+                                    &md
+                                } else {
+                                    ""
+                                },
+                                r.title.as_deref(),
+                            );
                         }
                         skipped
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push((page.url.clone(), "unchanged since last crawl".into()));
                     } else {
-                        let mut next_offset = r.next_offset;
+                        let mut next_offset = per_page_next;
                         let done;
                         {
                             // Reserve both limits under the result lock. Workers may
@@ -2263,6 +2360,11 @@ impl Crawler {
                             }
                             done = pages_done.fetch_add(1, Ordering::SeqCst) + 1;
                             kept.push(CrawlPage {
+                                focus: focus.as_ref().as_ref().map(|_| FocusStats {
+                                    omitted: r.focus_omitted,
+                                    blocks_total: r.blocks_total,
+                                    blocks_shown: r.blocks_shown,
+                                }),
                                 url: page.url.clone(),
                                 title: r.title.clone().unwrap_or_default(),
                                 kind: r.content_kind,
@@ -2291,11 +2393,20 @@ impl Crawler {
                             );
                         }
                         // A returned slice cannot populate the full-content history.
-                        if next_offset.is_none()
-                            && r.partial.is_none()
+                        if r.partial.is_none()
+                            && !r.thin
                             && let Some(rec) = &opts_worker.on_page
                         {
-                            rec(&page.url, r.fingerprint.as_deref(), &md, r.title.as_deref());
+                            rec(
+                                &page.url,
+                                r.fingerprint.as_deref(),
+                                if next_offset.is_none() && !r.focus_omitted {
+                                    &md
+                                } else {
+                                    ""
+                                },
+                                r.title.as_deref(),
+                            );
                         }
                         if duplicate {
                             skipped
@@ -2731,6 +2842,7 @@ impl Crawler {
         };
 
         Ok(CrawlResult {
+            inventory,
             crawl_delay: robots.crawl_delay,
             seed: seed.to_string(),
             pages: final_pages,

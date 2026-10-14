@@ -5,6 +5,53 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.0] - 2026-10-14
+
+### Added
+
+- `web_crawl` / `crawl --map-limit` exposes the inventory output limit
+  (default 120, maximum 50,000 URLs). Inventory provenance and incomplete
+  discovery are reported explicitly; hitting a cap never claims completeness.
+- Crawl page state includes focus omission and block counts. Dataset JSON
+  Lines advance to `dataset_version:2` with per-row focus receipts.
+
+### Fixed
+
+- Explicit logins and cookie imports preserve opaque persistent session
+  cookies, including Facebook's `c_user` and `xs` (#367), throughout storage,
+  reload, browser replay and HTTP replay. Independent cookie paths survive;
+  automatic harvest caps and stale daemon saves cannot erase explicit logins.
+- Live daemons detect cookie replacements even when file size and timestamps
+  match. Warm browsers replant updated logins before navigation; account DOM
+  caches and old browser harvests cannot resurrect the previous session.
+- IPv6 login targets retain their literal host through cookie replay and probe
+  URL construction; unrelated hosts and paths stay isolated.
+- Login probes no longer mistake a public home-page HTTP 200 for verified
+  authentication. Stored names are shown without values; failed writes,
+  unusable imports, capture failures and closed input report their actual
+  outcomes. Login profile locking protects long sessions and precedes `--fresh`;
+  CDP attaches only after Enter. Browser logs and profile permissions are private.
+- Crawl character budgets honor small requested limits and remain enforced
+  under concurrent workers. Short deadlines are no longer silently extended
+  to five seconds; discovery, rendering and extraction share the same clock.
+- Delta crawls retain full-source fingerprints across output pagination without
+  storing a truncated passage as complete baseline text. Unchanged pages still
+  expose descendants to discovery.
+- Map discovery reads past the old 10,000-entry per-sitemap cut, discloses
+  discovery guards and distinguishes a published inventory from observed
+  seed-page links. Conventional fallback probes stop after finding a sitemap.
+- Links survive loose text, headings and table cells when requested. Link/media
+  projections share a neutral source fingerprint, preventing false change reports.
+- Explicit HTTP-only fetch errors recommend an untried browser tier accurately.
+  Known human-only CAPTCHA walls skip an unnecessary browser launch while
+  managed challenges remain eligible for browser recovery. Exact-URL human
+  refusals are remembered for five minutes, scoped to route and cookie identity;
+  explicit tiers can recheck them and login/logout invalidates them.
+- Crawl DNS failures retain their cause across the robots boundary; an unresolved
+  name is permanent, while a temporary resolver failure remains retryable.
+- Probe replies omit unrelated content-kind/language and unsolicited change
+  commentary, retaining the match, access and completion signals.
+
 ## [4.8.1] - 2026-10-13
 
 ### Fixed

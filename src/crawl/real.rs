@@ -213,7 +213,13 @@ pub fn build(
                             let denied = crate::rules::Denial::from_error(&e);
                             let error_hint = match &denied {
                                 Some(d) => super::policy_skip_reason(d),
-                                None => format!("network: {e}"),
+                                None => match &e {
+                                    crate::error::FetchError::Dns(_) => format!("network.dns: {e}"),
+                                    crate::error::FetchError::DnsTimeout(_) => {
+                                        format!("network.dns_timeout: {e}")
+                                    }
+                                    _ => format!("network: {e}"),
+                                },
                             };
                             // A refused redirect hop lands the page on the
                             // hop's target, as a followed redirect would:
