@@ -96,7 +96,7 @@ DonSeTch is free and open source, and stays that way. Sponsorship pays for the t
 
 If your product is part of this space (proxy platforms, search infrastructure, BYO providers, anything a DonSeTch user would plug in), Gold goes one step further: fit natively inside DonSeTch and you get the placement plus an official integration shipped in the binary itself.
 
-**How to sponsor.** GitHub Sponsors is enabled and featured on this repo, but my region isn't supported for payouts yet, so the reliable route is email: **bhandaribishesh879@gmail.com**. Write me, I'll share my PayPal, and we go through the steps. One-time sponsorships are welcome at any amount, and [Ko-fi](https://ko-fi.com/G5Y624N5RE) covers quick one-offs.
+**How to sponsor.** The ♥ **Sponsor** button on this repo covers the quick route (Ko-fi), and one-time sponsorships are welcome at any amount. GitHub Sponsors payouts aren't available in my region yet, so for a monthly tier the reliable route is email: **bhandaribishesh879@gmail.com**. Write me, I'll share my PayPal, and we go through the steps.
 
 **Prepay to lock your rate.** You can pay for any number of months in one go at today's price, and that rate is fixed for the whole term, so 6 months of Gold at today's $49/mo is $294, and a later increase (even to $150/mo) never touches it. Price changes only ever apply to sponsorships started after them.
 

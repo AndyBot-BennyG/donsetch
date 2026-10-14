@@ -1,1 +1,7 @@
+# The ♥ Sponsor button in the repo header comes from THIS file, not from the
+# README. `github:` is inert until the account's Sponsors listing is approved
+# (payouts are not available in this region yet), so the button is driven by
+# Ko-fi, and the custom URL opens the sponsorship section (tiers + email).
 github: [dondai44423]
+ko_fi: G5Y624N5RE
+custom: ["https://github.com/dondai44423/donsetch#-sponsor-this-project"]
