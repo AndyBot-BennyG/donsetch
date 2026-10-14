@@ -496,6 +496,13 @@ impl Governor {
     /// Pick the least-blocked lane for the host, respecting the
     /// shared penalty box. Returns None when the whole host is
     /// boxed (caller waits for the box to lift).
+    ///
+    /// The direct lane is first in the list on purpose: a host starts on it
+    /// and escalates to a pool lane only once that host blocks, throttles or
+    /// errors on direct (`on_throttled`/`on_error` push direct's pace clock
+    /// out, so the next pick lands on a lane). The owned crawl fixtures pin
+    /// it ("the unused lane must receive no request"), so do not "fix" the
+    /// tie-break to prefer a pool lane: that is a policy change, not a repair.
     pub fn best_lane(&self, host: &str) -> Option<&Lane> {
         let host_boxed = {
             let hosts = self
@@ -872,6 +879,20 @@ mod tests {
         g.wait_for("ex.com", "lane0", 1);
         let pick = g.best_lane("ex.com").unwrap();
         assert_eq!(pick.id, "lane1");
+    }
+
+    #[test]
+    fn best_lane_keeps_a_fresh_host_on_the_direct_lane() {
+        // The shipped contract, pinned by the owned crawl fixtures ("the
+        // unused lane must receive no request"): a host starts on direct and
+        // moves to a pool lane once direct takes the block. Equally-due lanes
+        // resolve by list order, and direct is first.
+        let g = gov(&[LaneKind::Direct, LaneKind::Proxy, LaneKind::Proxy]);
+        assert_eq!(g.best_lane("fresh.example").unwrap().id, "lane0");
+        for _ in 0..8 {
+            g.on_error("fresh.example", "lane0");
+        }
+        assert_eq!(g.best_lane("fresh.example").unwrap().id, "lane1");
     }
 
     #[test]
