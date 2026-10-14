@@ -1059,7 +1059,10 @@ pub fn store_login_cookies(cookies: &[CookieRecord]) -> Result<(), String> {
         .persist()
         .map_err(|e| format!("login vault was not saved: {e}"))?;
     #[cfg(not(test))]
-    std::fs::File::open(path())
+    // Windows FlushFileBuffers requires a handle opened with write access.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path())
         .and_then(|f| f.sync_all())
         .map_err(|e| format!("login vault sync failed: {e}"))?;
     Ok(())
