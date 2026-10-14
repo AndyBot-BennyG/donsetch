@@ -271,12 +271,18 @@ async fn stealth_v3_short_browser_handoffs_use_one_original_deadline() {
                     if thin { &shell } else { "Access denied" },
                 )
                 .fetcher();
+            let first_read = Arc::new(Mutex::new(None));
+            let read_anchor = Arc::clone(&first_read);
             let fetch: PageFetcher = Arc::new(move |url, lane, referer, gate| {
                 let fetch = Arc::clone(&fetch);
+                let read_anchor = Arc::clone(&read_anchor);
                 async move {
-                    // 250ms, not 40ms: this read is the renewed-budget
-                    // signal the deadline assert below must see over
-                    // any runner's scheduling noise.
+                    read_anchor
+                        .lock()
+                        .unwrap()
+                        .get_or_insert_with(std::time::Instant::now);
+                    // A renewed browser budget must include time already
+                    // spent in this HTTP read, independent of setup noise.
                     tokio::time::sleep(Duration::from_millis(250)).await;
                     fetch(url, lane, referer, gate).await
                 }
@@ -286,23 +292,22 @@ async fn stealth_v3_short_browser_handoffs_use_one_original_deadline() {
             let reached = Arc::clone(&calls);
             let cancelled = Arc::new(Mutex::new(None));
             let cancelled_hook = Arc::clone(&cancelled);
-            let started = std::time::Instant::now();
             let budget = Duration::from_millis(800);
+            let hook_anchor = Arc::clone(&first_read);
             let hook: super::GhostHook = Arc::new(move |request| {
                 let reached = Arc::clone(&reached);
+                let hook_anchor = Arc::clone(&hook_anchor);
                 let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
                 *cancelled_hook.lock().unwrap() = Some(receiver);
                 async move {
                     let _held_until_cancelled = sender;
                     reached.fetch_add(1, Ordering::SeqCst);
-                    // Account for synchronous setup before crawl starts,
-                    // while rejecting a renewed budget captured after the
-                    // HTTP read. The 100ms slack swallows a loaded
-                    // runner's scheduling noise (a 10ms slack was crossed
-                    // on the Windows CI runner); the 250ms read keeps the
-                    // renewed-budget signal comfortably above it, so the
-                    // rejection stays armed.
-                    assert!(request.deadline <= started + budget + Duration::from_millis(100));
+                    // Crawl freezes its deadline before the first HTTP read.
+                    // Anchoring here excludes construction/configuration IO;
+                    // renewing after the read exceeds this bound without
+                    // relying on a platform-specific scheduling allowance.
+                    let read_started = hook_anchor.lock().unwrap().unwrap();
+                    assert!(request.deadline <= read_started + budget);
                     if stalled {
                         futures_util::future::pending::<()>().await;
                     }
@@ -321,8 +326,9 @@ async fn stealth_v3_short_browser_handoffs_use_one_original_deadline() {
                 }
                 .boxed()
             });
-            let result = Crawler::new(classifying_fetcher(fetch), gov())
-                .with_ghost(hook)
+            let crawler = Crawler::new(classifying_fetcher(fetch), gov()).with_ghost(hook);
+            let started = std::time::Instant::now();
+            let result = crawler
                 .crawl(
                     seed,
                     CrawlOptions {
