@@ -5,6 +5,40 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.10.0] - 2026-10-14
+
+### Added
+
+- A proxy guide in the README: one-command setup, every accepted URL form,
+  bulk `add` / `import` / `export`, `proxy test` before saving, where the pool
+  lives (`proxies.txt`, `[proxy] pool`, `DONSEEK_PROXIES`), a table of which
+  tool uses the pool and which does not, and the environment-proxy conventions.
+
+### Fixed
+
+- `donsetch doctor` told every user who configured proxies with `donsetch
+  proxy add` that the pool was empty ("pool empty ... direct-only egress"):
+  the check counted only `[proxy] pool` / `DONSEEK_PROXIES`, never the
+  `proxies.txt` the CLI writes, while `donsetch status` and the live lanes
+  disagreed with it. It now counts the merged pool, names where each lane came
+  from, warns when a `proxies.txt` line did not parse, and its
+  all-lanes-benched warning can fire for a file-configured pool.
+- A malformed proxy reference is reported as a proxy configuration error with
+  its own next action (`proxy.config`) instead of a generic HTTP error, so
+  `donsetch proxy add` prints `Invalid proxy URL: proxy configuration: bad port
+  (expected 1-65535)` rather than `Invalid proxy URL: http: proxy: bad port`,
+  and an agent branching on the error code gets the config fix it can make.
+
+### Changed
+
+- The README states crawl's real egress rule: each host's first request leaves
+  on the direct lane, later requests spread across the pool lanes as their
+  pacing allows, and a host that blocks or throttles direct moves off it. The
+  previous "crawl rides the lanes by default" overstated it. Crawl's behavior
+  is unchanged, and the rule is now pinned by a test beside the code.
+- `config show --markdown` documents `[proxy] pool` as a list (`DONSEEK_PROXIES`
+  stays comma-separated).
+
 ## [4.9.0] - 2026-10-14
 
 ### Added
