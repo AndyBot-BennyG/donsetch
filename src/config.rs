@@ -1600,7 +1600,7 @@ pub(crate) fn fieldbook() -> &'static Fieldbook {
             "pool",
             FieldKind::List,
             "(empty)",
-            "extra proxy pool, comma-separated",
+            "extra proxy pool lanes (config list; DONSEEK_PROXIES is comma-separated)",
         ),
         (
             "proxy",

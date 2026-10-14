@@ -621,28 +621,58 @@ fn check_fetch_egress() -> CheckResult {
 /// network. Named fix when every proxy lane is currently benched.
 fn check_proxy_pool() -> CheckResult {
     let proxy = &crate::config::cfg().proxy;
-    let pool_n = proxy.pool.iter().filter(|s| !s.trim().is_empty()).count();
+    // The pool is the union of the proxy FILE (`donsetch proxy add` writes
+    // cache_dir/proxies.txt) and the config/env layer (`[proxy] pool`,
+    // DONSEEK_PROXIES). Counting only the config layer told every user who
+    // added proxies with the CLI "pool empty ... direct-only egress" while
+    // their lanes were live and in use, and left the all-benched warning
+    // below unable to fire for them at all.
+    let (file_proxies, file_skipped) = crate::transport::proxy::load_config_verbose();
+    let from_config_n = proxy.pool.iter().filter(|s| !s.trim().is_empty()).count();
+    let lane_n = crate::transport::proxy::load_all().len();
     let persist = proxy.egress_persist && !crate::config::cfg().state.no_disk_state;
     let mut bits = Vec::new();
-    if pool_n == 0 {
-        bits.push("pool empty (DONSEEK_PROXIES or [proxy] pool; direct-only egress)".to_string());
+    if lane_n == 0 {
+        bits.push(
+            "pool empty (`donsetch proxy add <url>`, [proxy] pool or DONSEEK_PROXIES; direct-only egress)"
+                .to_string(),
+        );
     } else {
-        bits.push(format!("{pool_n} proxy lane(s) configured"));
+        bits.push(format!(
+            "{lane_n} proxy lane(s) ({} from {}, {from_config_n} from [proxy] pool/DONSEEK_PROXIES)",
+            file_proxies.len(),
+            crate::transport::proxy::config_path().display()
+        ));
+    }
+    // A file line that did not parse is a proxy the user believes is
+    // configured: that is a warn, never a quiet pass (Q1 semantics).
+    let unparsed = file_skipped > 0;
+    if unparsed {
+        bits.push(format!(
+            "{file_skipped} line(s) in the proxy file did not parse and are NOT lanes (`donsetch proxy list` shows what loaded)"
+        ));
     }
     bits.push(if persist {
         "egress health persisted".into()
     } else {
         "egress health NOT persisted (proxy.egress_persist=false or state.no_disk_state)".into()
     });
+    let verdict = |bits: Vec<String>| {
+        if unparsed {
+            CheckResult::Warn(bits.join(" · "))
+        } else {
+            CheckResult::Pass(bits.join(" · "))
+        }
+    };
 
     if !persist {
-        return CheckResult::Pass(bits.join(" · "));
+        return verdict(bits);
     }
 
     let path = paths::cache_dir().join("egress-health.json");
     if !path.exists() {
         bits.push("no egress-health.json yet (benches appear after the first burn)".into());
-        return CheckResult::Pass(bits.join(" · "));
+        return verdict(bits);
     }
     let raw = match std::fs::read_to_string(&path) {
         Ok(r) => r,
@@ -657,16 +687,16 @@ fn check_proxy_pool() -> CheckResult {
         .and_then(|v| v.get("dead").and_then(|d| d.as_array()).map(|a| a.len()))
         .unwrap_or(0);
 
-    if pool_n > 0 && dead_n >= pool_n {
+    if lane_n > 0 && dead_n >= lane_n {
         bits.push(format!(
-            "all {pool_n} proxy lane(s) benched in egress-health.json: run `donsetch proxy check` and fix creds/network"
+            "all {lane_n} proxy lane(s) benched in egress-health.json: run `donsetch proxy check` and fix creds/network"
         ));
         return CheckResult::Warn(bits.join(" · "));
     }
     bits.push(format!(
         "learned benches: {burned} burned pair marker(s), {dead_n} dead lane(s)"
     ));
-    CheckResult::Pass(bits.join(" · "))
+    verdict(bits)
 }
 
 /// `donsetch doctor --improve`: the self-improvement loop in plain
@@ -2710,6 +2740,37 @@ mod doctor_ultra_tests {
                 assert!(detail.contains("missing file"), "{detail}");
             }
             other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn proxy_pool_check_counts_the_cli_written_proxy_file() {
+        let _g = isolated_cache();
+        // `donsetch proxy add` writes cache_dir/proxies.txt and that file IS
+        // part of the pool: doctor must not call the pool empty while the CLI
+        // says "3 proxies configured" (and its all-benched warning has to be
+        // able to fire for a file-configured pool).
+        let path = crate::transport::proxy::config_path();
+        std::fs::write(
+            &path,
+            "socks5://127.0.0.1:1080\nhttp://user:pass@proxy.example:3128\n",
+        )
+        .unwrap();
+        match check_proxy_pool() {
+            CheckResult::Pass(detail) => {
+                assert!(detail.contains("2 proxy lane(s)"), "{detail}");
+                assert!(!detail.contains("pool empty"), "{detail}");
+            }
+            other => panic!("expected Pass, got {other:?}"),
+        }
+        // A line that does not parse is a proxy the user thinks is live.
+        std::fs::write(&path, "socks5://127.0.0.1:1080\nnot a proxy\n").unwrap();
+        match check_proxy_pool() {
+            CheckResult::Warn(detail) => {
+                assert!(detail.contains("1 proxy lane(s)"), "{detail}");
+                assert!(detail.contains("did not parse"), "{detail}");
+            }
+            other => panic!("expected Warn for the unparsed line, got {other:?}"),
         }
     }
 
