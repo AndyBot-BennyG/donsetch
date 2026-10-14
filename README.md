@@ -684,7 +684,7 @@ Thin adapter over the same engine the MCP server uses.
 | `donsetch doctor` | Health check and auto-fix (`--deep`, `--json`, `--fix`) |
 | `donsetch status` | Version, keys, proxies, cache, health overview |
 | `donsetch keys` | BYOK providers and plugins (`add`, `list`, `default`, `export`) |
-| `donsetch proxy` | Proxy management (`add`, `list`, `check`, `remove`, `clear`, `fetch on\|off`, `crawl on\|off`) |
+| `donsetch proxy` | Proxy management (`add`, `list`, `check`, `test`, `import`, `export`, `remove`, `clear`, `fetch on\|off`, `crawl on\|off`) |
 | `donsetch login` | Authenticated sessions for walled sites (`--list`, `--status`, `--logout`, `--import`) |
 | `donsetch config` | `show`, `--markdown`, `--legacy` |
 | `donsetch rules test <url>` | Explain what the local rules do with a URL, offline |
@@ -693,27 +693,43 @@ Thin adapter over the same engine the MCP server uses.
 
 ## 🔀 Proxies
 
-**Fetch** dials direct by default, which keeps the stealth guarantee intact: a proxy you configured is a proxy that sees your traffic. But it follows the curl/openssl convention when the environment asks for it:
-
-- `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (any case) route fetches through that proxy, and `NO_PROXY` exempts.
-- `DONSETCH_NO_ENV_PROXY=1` disables the convention entirely.
-- HTTP CONNECT proxies get an interception-safe handshake (no GREASE/ALPS/ECH/compress-cert), because TLS-terminating middleboxes re-sign with their own stack and some reset on exotic ClientHellos. SOCKS5 keeps the Chrome-true handshake, TLS rides end-to-end.
-- `SSL_CERT_FILE` / `SSL_CERT_DIR` load into the trust store, which is the only way re-signed certificates verify in an intercepting network, exactly like curl.
-- `donsetch doctor` reports the whole posture: resolved env proxy, kill-switch state, system and environment trust stores, plus a live check that names the interception fix when it fails.
-
-**The proxy pool is opt-in for fetch.** `donsetch proxy fetch on` lets `web_fetch` (and its browser escalation) ride the pool lanes, sticky per host, rotating on 429/407/dead/timeout; `donsetch proxy fetch off` puts it back on your own IP, which is the default. A one-shot read does not need a shared exit, and the pool's exit IPs are not better than yours for it.
-
-**Search and crawl** rotate proxies across lanes, each with durable health: sticky per-host lanes, persona-exclusive exits, RTT-aware pacing, burned lanes remembered across restarts. A direct dial that fails is not a dead link, and a lane that dies does not silently take a domain with it. Crawl rides the lanes by default; `donsetch proxy crawl off` leaves every crawl request on your IP.
+Adding a proxy is one command. Nothing else is required.
 
 ```bash
-donsetch proxy add <url>            # rotate-able proxy entry
-DONSEEK_PROXIES="url1,url2"         # env form, comma separated
-donsetch proxy list                 # list, credentials masked
-donsetch proxy check                # live connectivity test
-donsetch proxy fetch on             # opt web_fetch into the pool (default: your IP)
-donsetch proxy crawl off            # keep crawl on your IP
-donsetch proxy remove <n> && donsetch proxy clear
+donsetch proxy add socks5://user:pass@1.2.3.4:1080   # validated, probed, then saved
+donsetch proxy list                                  # what is configured (credentials masked)
+donsetch proxy check                                 # live probe: latency + real exit IP
 ```
+
+- **Formats**: `http://host:port` (HTTP CONNECT, credentials optional as `user:pass@`), `socks5://host:port` and its `socks5h://` alias (SOCKS5 sends the target as a name, so the proxy resolves DNS and your resolver never sees the host). A bare `host:port` is HTTP CONNECT. Anything else is refused with the reason.
+- **Many at once**: `donsetch proxy add url1 url2 url3`, or a whole file with `donsetch proxy import proxies.txt` (one URL per line, `#` comments) — `donsetch proxy export` writes that file back out. `--no-check` skips the probe when you are adding hundreds.
+- **Try before you add**: `donsetch proxy test <url>` probes one proxy without saving it.
+- **Where they live**: `donsetch proxy add` appends `<cache-dir>/proxies.txt` (mode 0600, credentials included). `DONSEEK_PROXIES="url1,url2"` in the environment and `[proxy] pool = ["url1", "url2"]` in `donsetch.toml` are the other two doors; all three merge, and an environment/config entry replaces a file entry with the same `host:port`. The pool is read at startup, so restart the MCP server to pick up a change.
+- **Removing**: `donsetch proxy remove 1` (the index `proxy list` prints, or `host:port`) and `donsetch proxy clear`.
+- **Checking is a tunnel, not a TCP handshake**: the probe connects through the proxy to `api.ipify.org` and prints the exit IP, so a proxy that accepts the connection and then cannot carry traffic is reported dead. `donsetch status` shows the count, `donsetch doctor` shows every lane and its health.
+
+### What uses the pool, and what does not
+
+A proxy you configure is a proxy that sees your traffic, so nothing uses one by accident.
+
+| Tool | Default | Off switch |
+|---|---|---|
+| `web_search` | always rotates the pool: one lane per engine, sticky per host, so a fan-out search does not hit nine engines from one IP | — |
+| `web_crawl` | each host starts on the direct lane; its later requests spread across the pool lanes as their pacing allows, and a host that blocks or throttles direct moves off it | `donsetch proxy crawl off` |
+| `web_fetch` | your own IP | `donsetch proxy fetch on` |
+
+`donsetch proxy fetch on` makes `web_fetch` (and its browser escalation) sticky to a pool lane per host, rotating on 429/407/dead/timeout. A one-shot read does not need a shared exit, which is why fetch is opt-in while search and crawl are not.
+
+Crawl is where the first request decides things: a host that bans on contact has already seen your own IP before a lane can take over. When a site must never see your address at all, keep it off entirely with a **[local rule](#local-rules-deny-a-site-or-pin-its-tier)** rather than leaning on the pool.
+
+### Riding your own proxy network
+
+Set the environment and every fetch follows the curl convention:
+
+- `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (any case) route fetches through that proxy, and `NO_PROXY` exempts hosts (suffix match, `*`, `host:port`, CIDR). `DONSETCH_NO_ENV_PROXY=1` disables the convention entirely. `[proxy] http` / `https` / `all` in `donsetch.toml` do the same thing without environment variables.
+- A configured proxy is a promise: if it cannot be dialled the fetch fails and says so, instead of quietly leaving on your own IP. Same for a pool lane: a dead lane is benched, not replaced by a direct read of a host it was carrying.
+- In an intercepting network (a TLS-terminating middlebox), HTTP CONNECT gets an interception-safe handshake (no GREASE/ALPS/ECH/compress-cert, which some middleboxes reset on) and `SSL_CERT_FILE` / `SSL_CERT_DIR` load into the trust store, exactly like curl. SOCKS5 keeps the Chrome-true handshake with TLS end to end. `donsetch doctor` reports the whole posture and names the interception fix when a live check fails.
+- Authenticated lanes work in the browser tier too: Chrome cannot carry proxy credentials, so it is pointed at a local credential-free relay that authenticates upstream, instead of dying as `ERR_SOCKS_CONNECTION_FAILED`.
 
 ## 🔐 Logged-in sessions
 
