@@ -10,6 +10,7 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/G5Y624N5RE)
 
+[![Become a sponsor](https://img.shields.io/badge/sponsor-become%20a%20sponsor-ea4aaa?logo=githubsponsors&logoColor=white)](#-sponsor-this-project)
 [![Rust](https://img.shields.io/badge/Rust-edition%202024-ce422b?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed?logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/license-AGPL%203.0-2563eb)](LICENSE)
@@ -79,6 +80,8 @@ Works with every MCP client (Claude Code, Cursor, OpenCode, Pi, Hermes) and as a
 
 **Sidrune AI**: one API for GPT, Claude, and other leading AI models. Sign up and get $3 in API credit through [this link](https://fluxionai.space/register?source=github&campaign=github-sidrune-donsetch&promo=SDRDONSETCH).
 
+**Want your name or logo here?** [Sponsorship tiers](#-sponsor-this-project).
+
 </div>
 
 ## 🤝 Sponsor this project
@@ -91,11 +94,11 @@ DonSeTch is free and open source, and stays that way. Sponsorship pays for the t
 | 🥈 Silver | $25/mo | Small logo + link in Our Sponsors |
 | 🥇 Gold | $49/mo | Large logo + link, pinned at the top of Our Sponsors |
 
-Prepaid monthly, cancel anytime. One-time sponsorships are welcome at any amount.
+If your product is part of this space (proxy platforms, search infrastructure, BYO providers, anything a DonSeTch user would plug in), Gold goes one step further: fit natively inside DonSeTch and you get the placement plus an official integration shipped in the binary itself.
 
-Pricing goes up as the project grows. It is early now, so a Gold at $49/mo is near-zero investment for any company whose product touches agent web research. If your product is part of this space (proxy platforms, search infrastructure, BYO providers, anything a DonSeTch user would plug in), Gold goes one step further: fit natively inside DonSeTch and you get the placement plus an official integration shipped in the binary itself.
+**How to sponsor.** GitHub Sponsors is enabled and featured on this repo, but my region isn't supported for payouts yet, so the reliable route is email: **bhandaribishesh879@gmail.com**. Write me, I'll share my PayPal, and we go through the steps. One-time sponsorships are welcome at any amount, and [Ko-fi](https://ko-fi.com/G5Y624N5RE) covers quick one-offs.
 
-Email **bhandaribishesh879@gmail.com** to become a sponsor.
+**Prepay to lock your rate.** You can pay for any number of months in one go at today's price, and that rate is fixed for the whole term, so 6 months of Gold at today's $49/mo is $294, and a later increase (even to $150/mo) never touches it. Price changes only ever apply to sponsorships started after them.
 
 ## 📦 Install
 
