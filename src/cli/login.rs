@@ -156,10 +156,18 @@ pub fn help() {
 // ── interactive flow ─────────────────────────────────────────
 
 async fn interactive(site: Option<&str>, fresh: bool, probe: bool) -> Result<(), String> {
+    if crate::config::cfg().state.no_disk_state {
+        return Err("login requires disk state; state.no_disk_state is enabled".into());
+    }
+    AuthRegistry::load_checked()?;
+    crate::ghost::cache::validate_login_vault()?;
     // The other branches of `login` (`--list`, `--status`, `--logout`,
     // `--import`) are non-interactive on purpose; only this one needs a
     // human. Without a terminal it used to launch a real browser first and
-    // discover the closed stdin afterwards, leaving nothing stored.
+    // discover the closed stdin afterwards, leaving nothing stored. State
+    // errors come first: an unreadable vault is the operator's problem to
+    // fix, and `unreadable_vault_refuses_login_before_launch_and_preserves_
+    // existing_bytes` pins that message.
     if !std::io::stdin().is_terminal() {
         return Err(
             "needs a terminal: stdin is not a TTY, so there is nobody to press Enter \
@@ -168,11 +176,6 @@ async fn interactive(site: Option<&str>, fresh: bool, probe: bool) -> Result<(),
                 .into(),
         );
     }
-    if crate::config::cfg().state.no_disk_state {
-        return Err("login requires disk state; state.no_disk_state is enabled".into());
-    }
-    AuthRegistry::load_checked()?;
-    crate::ghost::cache::validate_login_vault()?;
     let (open_url, key, probe_port) = match site {
         Some(s) => {
             let t = auth::normalize_target(s)?;
