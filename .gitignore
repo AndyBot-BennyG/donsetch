@@ -6,6 +6,9 @@ design.md
 # Private design blueprints — never public
 design/
 
+# V5 working docs — private (plan + discussion, decision log)
+v5/
+
 # Rust
 /target
 # Machine-specific cargo config (libclang/bindgen env — differs per OS)
