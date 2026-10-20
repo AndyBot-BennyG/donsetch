@@ -209,6 +209,16 @@ DONSETCH_BROWSER_BACKEND=cloakbrowser \
   CLOAKBROWSER_BINARY_PATH=/path/to/chrome donsetch doctor --deep
 ```
 
+You do not have to install CloakBrowser yourself: with auto-download on, DonSeTch fetches the pinned release from GitHub the first time the cloak backend is needed (a tier-2 fetch or `doctor`), unpacks it into its cache and reuses it from then on.
+
+```toml
+[browser]
+backend = "cloak"
+cloak_auto_download = true
+```
+
+The same from the environment: `DONSETCH_BROWSER__BACKEND=cloak DONSETCH_BROWSER__CLOAK_AUTO_DOWNLOAD=true donsetch doctor`.
+
 Aliases: `original` for `chromium`, `original-headless` for `headless`. Public CloakBrowser downloads are opt-in (`DONSETCH_CLOAK_AUTO_DOWNLOAD=1`) and verified: Ed25519-signed `SHA256SUMS`, manifest bound to the requested Chromium version, archive SHA-256 checked, unsafe paths rejected. `CLOAKBROWSER_VERSION` pins a version. CloakBrowser binaries are never bundled in releases or images.
 
 </details>

@@ -337,7 +337,7 @@ fn install_public_binary() -> Result<PathBuf, String> {
                 "archive SHA-256 mismatch for {name}: expected {expected_hash}, got {actual_hash}"
             ));
         }
-        extract_archive(&archive_path, &root)?;
+        extract_archive(&archive_path, name, &root)?;
         validate_binary(&expected).map_err(|e| format!("downloaded binary invalid: {e}"))?;
         Ok(expected.clone())
     })();
@@ -465,7 +465,9 @@ fn download_to_once(client: &Client, url: &str, path: &Path) -> Result<(), Strin
     Ok(())
 }
 
-fn extract_archive(archive_path: &Path, root: &Path) -> Result<(), String> {
+/// Unpack `archive_path` into `root`, picking the format from `asset_name`,
+/// the release asset's file name.
+fn extract_archive(archive_path: &Path, asset_name: &str, root: &Path) -> Result<(), String> {
     let parent = root.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|e| format!("cache directory: {e}"))?;
     let staging = parent.join(format!(
@@ -476,7 +478,9 @@ fn extract_archive(archive_path: &Path, root: &Path) -> Result<(), String> {
     fs::create_dir(&staging).map_err(|e| format!("extract staging: {e}"))?;
 
     let result = (|| {
-        if archive_path.extension().is_some_and(|e| e == "zip") {
+        // The download lands at an extensionless temp path, so only the
+        // asset name says which format it is.
+        if asset_name.ends_with(".zip") {
             extract_zip(archive_path, &staging)?;
         } else {
             extract_tar(archive_path, &staging)?;
@@ -724,6 +728,28 @@ mod tests {
         let _ = fs::remove_file(&archive);
         let _ = fs::remove_dir_all(&dest);
         (result, seen)
+    }
+
+    #[test]
+    fn windows_asset_downloaded_to_an_extensionless_path_is_unpacked_as_zip() {
+        // The installer downloads to `temporary_path("archive")`, which has no
+        // extension; the asset name alone must route the zip to the zip reader.
+        let archive = temporary_path("archive");
+        let root = temporary_path("test-root");
+        write_test_zip(
+            &archive,
+            &[
+                TestEntry::Dir("cloakbrowser/"),
+                TestEntry::File("cloakbrowser/chrome.exe", b"MZ not really"),
+            ],
+        );
+        let result = extract_archive(&archive, archive_name("windows-x64"), &root);
+        // flatten_single_directory lifts the lone top-level folder into root.
+        let exe = fs::read(root.join("chrome.exe")).ok();
+        let _ = fs::remove_file(&archive);
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(result, Ok(()));
+        assert_eq!(exe.as_deref(), Some(&b"MZ not really"[..]));
     }
 
     #[test]

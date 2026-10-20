@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The README's browser-backend section says DonSeTch can install CloakBrowser
+  itself: with `browser.backend = "cloak"` and
+  `browser.cloak_auto_download = true` it downloads the pinned release the
+  first time the backend is needed and reuses it from the cache. It shows the
+  two settings as TOML and as `DONSETCH_BROWSER__*` environment variables.
+
+### Fixed
+
+- CloakBrowser could never be installed on Windows. The installer saves the
+  downloaded release asset to a temporary file with no extension, then chose
+  the unpacker from that file's extension, so the `windows-x64` zip always
+  went to the tar reader and failed with `read tar entry: invalid gzip
+  header` after the download and signature checks had passed. The format now
+  comes from the asset name. Linux and macOS ship `.tar.gz` and were not
+  affected.
+
 ### Security
 
 - `zip` 2.4.2 to 9.0.5, clearing three advisories that are fixed only in 9.x
