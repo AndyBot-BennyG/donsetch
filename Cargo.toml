@@ -44,7 +44,16 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = "0.11"
 base64 = "0.23"
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# `deflate-flate2`, not `deflate`: zip's `deflate` also turns on
+# `flate2/zlib-rs`, and Cargo's feature unification then makes zlib-rs
+# flate2's backend for the whole build, replacing miniz_oxide (which our own
+# `flate2 = "1"` selects by default) under every gzip/deflate path in fetch,
+# not just zip. `deflate-flate2` reads and writes deflate through whatever
+# backend flate2 already has. The swap is not neutral: zlib-rs's level 1
+# never falls back to stored blocks, so incompressible input grows ~6% per
+# pass, and the 200-layer gzip test in fetch/decompress.rs went from under a
+# second to a 60 s timeout.
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 # Probe mode (must_contain): pattern verification against fetched
 # content. Pure Rust, no unsafe.
 regex = "1"
@@ -108,8 +117,9 @@ tokio = { version = "1", features = ["test-util"] }
 sha2 = "0.11"
 flate2 = "1"
 # Microsoft ships the Windows ONNX Runtime as a zip; same pin as the
-# runtime dependency above, so the lock is unchanged.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# runtime dependency above (features included, for the reason given there),
+# so the lock is unchanged.
+zip ={ version = "9", default-features = false, features = ["deflate-flate2"] }
 
 # cfg() on build-dependencies resolves against the HOST, not the target, so this
 # only applies when building *on* Windows -- matching the #[cfg(windows)] gate on

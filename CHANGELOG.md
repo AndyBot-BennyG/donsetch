@@ -5,6 +5,19 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- `zip` 2.4.2 to 9.0.5, clearing three advisories that are fixed only in 9.x
+  (RUSTSEC-2026-0367 through 0369: SUID/SGID bits kept on extraction, and
+  symlinks that escape the destination or carry permissions through, all in
+  `ZipArchive::extract`). DonSeTch never called `extract`: the CloakBrowser
+  installer and `build.rs` read entries themselves. The bump clears the
+  `cargo-deny` gate, and the CloakBrowser extractor gains tests for
+  traversal and symlink entries. The crate now asks for `deflate-flate2`,
+  not `deflate`, so flate2 keeps its miniz_oxide backend build-wide (#373).
+
 ## [4.10.1] - 2026-10-14
 
 ### Added
