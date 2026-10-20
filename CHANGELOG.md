@@ -5,6 +5,17 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The READMEs name the setting that restores the split MCP result for
+  integrations reading both surfaces: the npm README now gives
+  `[mcp] text_only = false` and `DONSETCH_MCP__TEXT_ONLY=false` instead of only
+  pointing at the full README, and the full README no longer lists the legacy
+  `DONSETCH_MCP_TEXT_ONLY=1`, which only sets the default and ignores `=0`
+  (#375).
+
 ## [4.10.1] - 2026-10-14
 
 ### Added
