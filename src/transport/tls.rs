@@ -6,8 +6,8 @@
 
 use boring::ex_data::Index;
 use boring::ssl::{
-    Ssl, SslConnector, SslContext, SslMethod, SslSession, SslSessionCacheMode, SslVerifyMode,
-    SslVersion,
+    Ssl, SslConnector, SslContext, SslContextBuilder, SslMethod, SslSession, SslSessionCacheMode,
+    SslVerifyMode, SslVersion,
 };
 use boring::x509::{X509, X509VerifyError};
 use foreign_types::ForeignType;
@@ -323,6 +323,16 @@ fn build_connector_with(
         return Err(FetchError::Tls("no root certs loaded".into()));
     }
 
+    verify_peer_unless_blocked(&mut b, blocked);
+
+    Ok(b.build())
+}
+
+/// Turns on peer verification against the context's trust store, and
+/// fails any verified chain with a certificate whose key is listed in
+/// `blocked`, with `X509VerifyError::APPLICATION_VERIFICATION` as the
+/// verify error. The host name is checked when the connection sets one.
+fn verify_peer_unless_blocked(b: &mut SslContextBuilder, blocked: &'static [[u8; 32]]) {
     // A trust store can keep a root whose intermediates are publicly
     // compromised: Windows kept AAA Certificate Services trusted and
     // revoked the eMudhra cross-signs instead, and nothing here checks
@@ -342,20 +352,23 @@ fn build_connector_with(
         }
         !refused
     });
-
-    Ok(b.build())
 }
 
 /// Same wire behaviors as `build_connector_with(ChromeTrue)` but surfaced as
 /// a raw `SslContextBuilder` for transports that own their own handshake glue
 /// (the h3 stack runs quiche over this Chrome-true builder). Differences:
 /// TLS 1.3 only (the QUIC spec allows only TLS 1.3), ALPN `h3` only, and no
-/// in-boring session callbacks: the QUIC session store is persistence-managed
-/// at the h3 layer via quiche's serialized SSL_SESSION bytes.
+/// session callbacks of its own: quiche installs its own new-session
+/// callback, and the h3 layer persists quiche's serialized SSL_SESSION bytes.
+///
+/// The builder verifies the peer with the same trust store as h1/h2 and
+/// refuses a chain carrying a key listed in `blocked`. Callers must not
+/// call quiche's `Config::verify_peer` on it: that replaces the verify
+/// callback with none, which drops the blocklist check.
 pub fn build_quic_ctx_builder(
     profile: &BrowserProfile,
-) -> Result<boring::ssl::SslContextBuilder, FetchError> {
-    use boring::ssl::SslContext;
+    blocked: &'static [[u8; 32]],
+) -> Result<SslContextBuilder, FetchError> {
     let mut b = SslContext::builder(SslMethod::tls()).map_err(tls_err)?;
     b.set_min_proto_version(Some(SslVersion::TLS1_3))
         .map_err(tls_err)?;
@@ -421,6 +434,9 @@ pub fn build_quic_ctx_builder(
     if loaded == 0 {
         return Err(FetchError::Tls("no root certs loaded".into()));
     }
+    // quiche's connect sets the host name, which turns on the hostname
+    // check together with this.
+    verify_peer_unless_blocked(&mut b, blocked);
     Ok(b)
 }
 

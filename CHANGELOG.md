@@ -30,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same incident (RUSTSEC-2026-0381 through 0383): the rustls clients
   (login, `doctor`, BYOK search, downloads) reject paths through those keys,
   and the bundled roots drop emSign ECC Root CA - G3.
+- The opt-in h3 lane (`[fetch] h3 = true`) verifies the server certificate:
+  the same trust store and compromised-CA list as h1/h2, and a host name
+  check. Until now a QUIC handshake accepted any certificate, so anyone able
+  to intercept the UDP traffic to a host that advertised HTTP/3 could serve
+  content in its name (GHSA-h25m-wq9j-hq58). A refused certificate drops the
+  h3 route, and the fetch falls back to h1/h2, which verifies on its own.
+  The h3 lane checks an IP-literal host as a DNS name, so a certificate that
+  names the address only as an IP takes that fallback too. `routes.json`
+  moves to version 2, which drops the learned h3 routes once, together with
+  their saved sessions: those came from unverified handshakes, and resuming
+  one skips verification. The default (`h3 = false`) was never affected.
 
 ## [4.10.1] - 2026-10-14
 

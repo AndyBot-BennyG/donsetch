@@ -24,7 +24,11 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde::{Deserialize, Serialize};
 
-const VERSION: u32 = 1;
+// 2: QUIC handshakes verify the server certificate. A version 1 file is
+// dropped on load because its sessions came from unverified handshakes,
+// and resuming one skips verification. Bump again whenever a key joins
+// COMPROMISED_CA_KEYS, for the same reason.
+const VERSION: u32 = 2;
 const MA_DEFAULT: u64 = 3600; // alt-svc without ma= gets Chrome's 1h default
 /// Sanity ceiling on a server-declared ma= (30 days): a hostile
 /// u64::MAX vouch must not pin an h3 route past every eviction.
@@ -114,10 +118,18 @@ fn load_file(path: &PathBuf) -> RoutesFile {
     match std::fs::read(path) {
         Ok(bytes) => match serde_json::from_slice::<RoutesFile>(&bytes) {
             Ok(f) if f.version == VERSION => f,
-            _ => RoutesFile {
-                version: VERSION,
-                routes: HashMap::new(),
-            },
+            _ => {
+                // Overwrite it now rather than at the next persist: left on
+                // disk, a version 1 file hands its unverified sessions to an
+                // older binary after a downgrade. A file from a newer version
+                // is overwritten too; before, it was ignored and replaced at
+                // the next persist anyway.
+                save_file(path, &HashMap::new());
+                RoutesFile {
+                    version: VERSION,
+                    routes: HashMap::new(),
+                }
+            }
         },
         Err(_) => RoutesFile {
             version: VERSION,
@@ -423,6 +435,50 @@ mod tests {
         save_file(&path, &routes);
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "session-bearing routes.json must be 0600");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Version 1 files hold sessions from QUIC handshakes that verified
+    // no certificate; resuming one would skip verification again, here or
+    // in an older binary after a downgrade, so the file on disk is
+    // rewritten too. The same row under the current version survives, so
+    // only the version drops it.
+    #[test]
+    fn a_version_1_file_loses_its_unverified_sessions() {
+        let dir = std::env::temp_dir()
+            .join("donsetch-test")
+            .join(crate::handles::random_base62(16));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("routes.json");
+        for (version, kept) in [(1, false), (VERSION, true)] {
+            let row = serde_json::json!({
+                "use_h3": true,
+                "h3_port": 443,
+                "valid_until_ms": now_ms() + 60_000,
+                "egress": "direct",
+                "session_b64": "c2VjcmV0",
+            });
+            let file = serde_json::json!({
+                "version": version,
+                "routes": {"example.test": row},
+            });
+            std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+            let loaded = load_file(&path);
+            assert_eq!(loaded.version, VERSION);
+            assert_eq!(
+                loaded.routes.contains_key("example.test"),
+                kept,
+                "version {version}"
+            );
+            let on_disk: RoutesFile =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(on_disk.version, VERSION, "version {version} on disk");
+            assert_eq!(
+                on_disk.routes.contains_key("example.test"),
+                kept,
+                "version {version} on disk"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
