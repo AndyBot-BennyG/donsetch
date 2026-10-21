@@ -1745,7 +1745,7 @@ async fn fetch_single_inner(
                 let next_action = if failures >= 3 {
                     "repeated transport failures from this egress in the last 10 minutes; check the host from another network or choose another source before retrying".into()
                 } else {
-                    next_action_for(None, 0, kind)
+                    transport_next_action(&e, kind)
                 };
                 return tool_error_structured(
                     friendly_fetch_error(&e),

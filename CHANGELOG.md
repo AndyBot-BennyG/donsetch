@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cargo-deny` gate, and the CloakBrowser extractor gains tests for
   traversal and symlink entries. The crate now asks for `deflate-flate2`,
   not `deflate`, so flate2 keeps its miniz_oxide backend build-wide (#373).
+- The HTTP tier refuses TLS chains through the eight eMudhra intermediate CA
+  keys published as compromised in October 2026
+  (<https://emudhra.we-have-a-problem.com/>), whatever the trust store says.
+  On Windows, the HTTP tier accepted them until now: Windows still trusts AAA
+  Certificate Services, the root above the Sectigo cross-signs, and blocks
+  the intermediates through revocation, which DonSeTch does not check. The
+  match is on the public key, so both certificates of each key are covered.
+  A refusal is reported as `tls.verify` with its own message and next action,
+  never the advice to trust another CA bundle.
+- `rustls-webpki` 0.103.16, `webpki-roots` and `webpki-root-certs` 1.0.10 for
+  the same incident (RUSTSEC-2026-0381 through 0383): the rustls clients
+  (login, `doctor`, BYOK search, downloads) reject paths through those keys,
+  and the bundled roots drop emSign ECC Root CA - G3.
 
 ## [4.10.1] - 2026-10-14
 
