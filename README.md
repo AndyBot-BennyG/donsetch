@@ -82,7 +82,7 @@ Works with every MCP client (Claude Code, Cursor, OpenCode, Pi, Hermes) and as a
 
 <a href="https://proxy-seller.com/"><img src="assets/sponsors/proxy-seller-banner.png" alt="Proxy-Seller: private residential, mobile, ISP and datacenter proxies with HTTP(S) and SOCKS5 support. Promo code DON15 for 15% off." width="100%"></a>
 
-**Proxy-Seller**: private residential, mobile (4G/5G/LTE), ISP, and datacenter IPv4/IPv6 proxies with HTTP(S) and SOCKS5 support, 47M+ residential IPs in 220+ locations, precise country/city/ISP targeting, 99.7% uptime, and 24/7 support. Promo code **DON15** takes 15% off.
+**[Proxy-Seller](https://proxy-seller.com/)**: private residential, mobile (4G/5G/LTE), ISP, and datacenter IPv4/IPv6 proxies with HTTP(S) and SOCKS5 support, 47M+ residential IPs in 220+ locations, precise country/city/ISP targeting, 99.7% uptime, and 24/7 support. Promo code **DON15** takes 15% off.
 
 **Want your name or logo here?** [Sponsorship tiers](#-sponsor-this-project).
 
