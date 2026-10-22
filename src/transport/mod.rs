@@ -1,3 +1,4 @@
+pub(crate) mod ca_blocklist;
 pub mod dns;
 pub mod h1;
 pub mod h2;

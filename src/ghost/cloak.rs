@@ -337,7 +337,7 @@ fn install_public_binary() -> Result<PathBuf, String> {
                 "archive SHA-256 mismatch for {name}: expected {expected_hash}, got {actual_hash}"
             ));
         }
-        extract_archive(&archive_path, &root)?;
+        extract_archive(&archive_path, name, &root)?;
         validate_binary(&expected).map_err(|e| format!("downloaded binary invalid: {e}"))?;
         Ok(expected.clone())
     })();
@@ -465,7 +465,9 @@ fn download_to_once(client: &Client, url: &str, path: &Path) -> Result<(), Strin
     Ok(())
 }
 
-fn extract_archive(archive_path: &Path, root: &Path) -> Result<(), String> {
+/// Unpack `archive_path` into `root`, picking the format from `asset_name`,
+/// the release asset's file name.
+fn extract_archive(archive_path: &Path, asset_name: &str, root: &Path) -> Result<(), String> {
     let parent = root.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|e| format!("cache directory: {e}"))?;
     let staging = parent.join(format!(
@@ -476,7 +478,9 @@ fn extract_archive(archive_path: &Path, root: &Path) -> Result<(), String> {
     fs::create_dir(&staging).map_err(|e| format!("extract staging: {e}"))?;
 
     let result = (|| {
-        if archive_path.extension().is_some_and(|e| e == "zip") {
+        // The download lands at an extensionless temp path, so only the
+        // asset name says which format it is.
+        if asset_name.ends_with(".zip") {
             extract_zip(archive_path, &staging)?;
         } else {
             extract_tar(archive_path, &staging)?;
@@ -544,7 +548,12 @@ fn extract_zip(path: &Path, dest: &Path) -> Result<(), String> {
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("read zip entry: {e}"))?;
-        let name = PathBuf::from(entry.name());
+        let name = PathBuf::from(
+            entry
+                .name()
+                .map_err(|e| format!("read zip entry name: {e}"))?
+                .into_owned(),
+        );
         safe_member(&name)?;
         let out = dest.join(&name);
         if entry.is_dir() {
@@ -675,5 +684,125 @@ mod tests {
     fn version_pin_rejects_url_injection() {
         assert!(!valid_version("146.0.1/../../x"));
         assert!(valid_version("146.0.7680.177.5"));
+    }
+
+    enum TestEntry<'a> {
+        Dir(&'a str),
+        File(&'a str, &'a [u8]),
+        Symlink(&'a str, &'a str),
+    }
+
+    fn write_test_zip(path: &Path, entries: &[TestEntry]) {
+        use std::io::Write as _;
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let mut writer = zip::ZipWriter::new(File::create(path).unwrap());
+        for entry in entries {
+            match entry {
+                TestEntry::Dir(name) => writer.add_directory(*name, options).unwrap(),
+                TestEntry::File(name, data) => {
+                    writer.start_file(*name, options).unwrap();
+                    writer.write_all(data).unwrap();
+                }
+                TestEntry::Symlink(name, target) => {
+                    writer.add_symlink(*name, *target, options).unwrap();
+                }
+            }
+        }
+        writer.finish().unwrap();
+    }
+
+    /// Extract a freshly written zip into a fresh directory, then remove
+    /// both and hand back the result plus whatever `inspect` read from the
+    /// extraction before cleanup.
+    fn extract_test_zip<T>(
+        entries: &[TestEntry],
+        inspect: impl FnOnce(&Path) -> T,
+    ) -> (Result<(), String>, T) {
+        let archive = temporary_path("test-zip");
+        let dest = temporary_path("test-zip-out");
+        fs::create_dir(&dest).unwrap();
+        write_test_zip(&archive, entries);
+        let result = extract_zip(&archive, &dest);
+        let seen = inspect(&dest);
+        let _ = fs::remove_file(&archive);
+        let _ = fs::remove_dir_all(&dest);
+        (result, seen)
+    }
+
+    #[test]
+    fn windows_asset_downloaded_to_an_extensionless_path_is_unpacked_as_zip() {
+        // The installer downloads to `temporary_path("archive")`, which has no
+        // extension; the asset name alone must route the zip to the zip reader.
+        let archive = temporary_path("archive");
+        let root = temporary_path("test-root");
+        write_test_zip(
+            &archive,
+            &[
+                TestEntry::Dir("cloakbrowser/"),
+                TestEntry::File("cloakbrowser/chrome.exe", b"MZ not really"),
+            ],
+        );
+        let result = extract_archive(&archive, archive_name("windows-x64"), &root);
+        // flatten_single_directory lifts the lone top-level folder into root.
+        let exe = fs::read(root.join("chrome.exe")).ok();
+        let _ = fs::remove_file(&archive);
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(result, Ok(()));
+        assert_eq!(exe.as_deref(), Some(&b"MZ not really"[..]));
+    }
+
+    #[test]
+    fn zip_archive_extracts_files_and_directories() {
+        let (result, (exe, pak, empty_dir)) = extract_test_zip(
+            &[
+                TestEntry::Dir("chrome/"),
+                TestEntry::File("chrome/chrome.exe", b"MZ not really"),
+                TestEntry::File("chrome/locales/en-US.pak", b"pak"),
+                TestEntry::Dir("chrome/empty/"),
+            ],
+            |dest| {
+                (
+                    fs::read(dest.join("chrome").join("chrome.exe")).ok(),
+                    fs::read(dest.join("chrome").join("locales").join("en-US.pak")).ok(),
+                    dest.join("chrome").join("empty").is_dir(),
+                )
+            },
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(exe.as_deref(), Some(&b"MZ not really"[..]));
+        // A file whose directory has no entry of its own still lands.
+        assert_eq!(pak.as_deref(), Some(&b"pak"[..]));
+        assert!(empty_dir);
+    }
+
+    #[test]
+    fn zip_archive_rejects_a_traversal_entry() {
+        let (result, escaped) =
+            extract_test_zip(&[TestEntry::File("../escape.txt", b"x")], |dest| {
+                dest.parent().unwrap().join("escape.txt").exists()
+            });
+        let error = result.unwrap_err();
+        assert!(error.contains("escapes extraction root"), "{error}");
+        assert!(!escaped);
+    }
+
+    #[test]
+    fn zip_symlink_entry_becomes_a_regular_file() {
+        // The zip advisories RUSTSEC-2026-0368/0369 concern symlinks that
+        // `ZipArchive::extract` creates; this extractor must never create one.
+        let (result, (is_file, contents)) = extract_test_zip(
+            &[TestEntry::Symlink("chrome/link", "../../outside")],
+            |dest| {
+                let link = dest.join("chrome").join("link");
+                (
+                    fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_file()),
+                    fs::read(&link).ok(),
+                )
+            },
+        );
+        assert_eq!(result, Ok(()));
+        assert!(is_file);
+        assert_eq!(contents.as_deref(), Some(&b"../../outside"[..]));
     }
 }

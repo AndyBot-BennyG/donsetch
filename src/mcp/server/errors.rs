@@ -593,6 +593,20 @@ pub(super) fn next_action_for(verdict: Option<Verdict>, status: u16, kind: &str)
     }
 }
 
+/// `next_action` for a transport failure of kind `kind`: the
+/// `next_action_for` advice, except for a chain refused by the
+/// compromised-CA blocklist, which gets advice of its own.
+pub(super) fn transport_next_action(e: &FetchError, kind: &str) -> String {
+    match e {
+        // Still kind tls.verify, but its advice (trust another CA
+        // bundle) is the one thing that must not be done here.
+        FetchError::Tls(msg) if crate::transport::tls::is_blocked_ca_failure(msg) => {
+            "the server's certificate chain uses a CA key known to be compromised: do not retry or change the trust store; choose another source".into()
+        }
+        _ => next_action_for(None, 0, kind),
+    }
+}
+
 /// Escalation trace: the ordered record of what DonSeTch tried :
 /// HTTP → browser → OCR-style fallbacks : with tier, action,
 /// outcome and per-step latency. Successes expose it through client-only
@@ -819,6 +833,32 @@ mod stitch_tests {
         assert_eq!(
             fetch_error_kind(&classified("some exotic library error")),
             "permanent"
+        );
+    }
+
+    // A blocklist refusal is a verify failure on every surface (kind,
+    // code, message passed through) but never gets the tls.verify
+    // advice to trust another bundle.
+    #[test]
+    fn blocked_ca_failure_keeps_tls_verify_but_not_its_advice() {
+        let blocked = FetchError::Tls(crate::transport::tls::BLOCKED_CA_FAILURE.into());
+        assert_eq!(fetch_error_kind(&blocked), "tls.verify");
+        let message = friendly_fetch_error(&blocked);
+        assert!(
+            message.contains("publicly known to be compromised"),
+            "{message}"
+        );
+        assert_eq!(error_code(&message, None).as_ref(), "tls.verify");
+        let advice = transport_next_action(&blocked, "tls.verify");
+        assert!(advice.contains("compromised"), "{advice}");
+        assert!(!advice.contains("export SSL_CERT_FILE"), "{advice}");
+
+        let untrusted = FetchError::Tls(crate::transport::tls::classify_handshake_error(
+            &std::io::Error::other("certificate verify failed: unknown ca"),
+        ));
+        assert_eq!(
+            transport_next_action(&untrusted, "tls.verify"),
+            next_action_for(None, 0, "tls.verify")
         );
     }
 

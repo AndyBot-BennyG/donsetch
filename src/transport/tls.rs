@@ -6,9 +6,10 @@
 
 use boring::ex_data::Index;
 use boring::ssl::{
-    Ssl, SslConnector, SslContext, SslMethod, SslSession, SslSessionCacheMode, SslVersion,
+    Ssl, SslConnector, SslContext, SslMethod, SslSession, SslSessionCacheMode, SslVerifyMode,
+    SslVersion,
 };
-use boring::x509::X509;
+use boring::x509::{X509, X509VerifyError};
 use foreign_types::ForeignType;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -191,17 +192,29 @@ pub(crate) fn effective_sigalgs(profile: &BrowserProfile, handshake: HandshakePr
 }
 
 pub fn build_connector(profile: &BrowserProfile) -> Result<SslConnector, FetchError> {
-    build_connector_with(profile, HandshakeProfile::ChromeTrue)
+    build_connector_with(
+        profile,
+        HandshakeProfile::ChromeTrue,
+        crate::transport::ca_blocklist::COMPROMISED_CA_KEYS,
+    )
 }
 
 /// Same as `build_connector` but with the interception-safe wire profile.
 pub fn build_connector_compat(profile: &BrowserProfile) -> Result<SslConnector, FetchError> {
-    build_connector_with(profile, HandshakeProfile::InterceptionSafe)
+    build_connector_with(
+        profile,
+        HandshakeProfile::InterceptionSafe,
+        crate::transport::ca_blocklist::COMPROMISED_CA_KEYS,
+    )
 }
 
+/// `blocked` lists SubjectPublicKeyInfo SHA-256 hashes: a chain with a
+/// certificate carrying one of those keys fails verification even when
+/// the trust store accepts it.
 fn build_connector_with(
     profile: &BrowserProfile,
     handshake: HandshakeProfile,
+    blocked: &'static [[u8; 32]],
 ) -> Result<SslConnector, FetchError> {
     let mut b = SslConnector::builder(SslMethod::tls()).map_err(tls_err)?;
     b.set_min_proto_version(Some(SslVersion::TLS1_2))
@@ -309,6 +322,26 @@ fn build_connector_with(
     if loaded == 0 {
         return Err(FetchError::Tls("no root certs loaded".into()));
     }
+
+    // A trust store can keep a root whose intermediates are publicly
+    // compromised: Windows kept AAA Certificate Services trusted and
+    // revoked the eMudhra cross-signs instead, and nothing here checks
+    // revocation. BoringSSL calls this once per certificate of the
+    // verified path, after its own checks.
+    b.set_verify_callback(SslVerifyMode::PEER, move |preverify_ok, ctx| {
+        // A failure BoringSSL already found stands as it is.
+        if !preverify_ok {
+            return false;
+        }
+        let refused = ctx
+            .current_cert()
+            .is_some_and(|cert| crate::transport::ca_blocklist::is_blocked(cert, blocked));
+        if refused {
+            // `connect` reads this code back to name the failure.
+            ctx.set_error(Err(X509VerifyError::APPLICATION_VERIFICATION));
+        }
+        !refused
+    });
 
     Ok(b.build())
 }
@@ -587,7 +620,19 @@ pub async fn connect(
     let stream = SslStreamBuilder::new(ssl, tcp)
         .connect()
         .await
-        .map_err(|e| FetchError::Tls(classify_handshake_error(&e)))?;
+        .map_err(|e| {
+            // Only the blocklist callback in build_connector_with sets
+            // APPLICATION_VERIFICATION, so this names that refusal
+            // instead of the generic trust-store hint.
+            let blocked = e.ssl().is_some_and(|ssl| {
+                ssl.verify_result() == Err(X509VerifyError::APPLICATION_VERIFICATION)
+            });
+            FetchError::Tls(if blocked {
+                BLOCKED_CA_FAILURE.to_string()
+            } else {
+                classify_handshake_error(&e)
+            })
+        })?;
 
     Ok(stream)
 }
@@ -649,11 +694,22 @@ pub fn classify_handshake_error<E: std::error::Error>(e: &E) -> String {
 /// True when a classified TLS message describes a certificate/trust
 /// failure: the certificate the far side presented, never lane health.
 /// The vocabulary is exactly what `classify_handshake_error` emits for
-/// verify problems, and it is the one predicate the mcp error mapping
+/// verify problems plus `BLOCKED_CA_FAILURE`, which `connect` emits for
+/// a blocklist refusal, and it is the one predicate the mcp error mapping
 /// (tls.verify) and the fetch egress accounting both key off, so the
 /// two can never drift apart.
 pub fn is_cert_verify_failure(msg: &str) -> bool {
     msg.starts_with("TLS certificate verification failed") || msg.contains("trusted root")
+}
+
+/// The handshake failure for a chain refused by the compromised-CA
+/// blocklist. It is a certificate-verify failure
+/// (`is_cert_verify_failure` holds), so it keeps that class everywhere.
+pub const BLOCKED_CA_FAILURE: &str = "TLS certificate verification failed: the server's chain contains a certificate authority key that is publicly known to be compromised, so DonSeTch refuses it whatever the trust store says. Adding certificates or setting SSL_CERT_FILE does not change this.";
+
+/// True when a classified TLS message is `BLOCKED_CA_FAILURE`.
+pub fn is_blocked_ca_failure(msg: &str) -> bool {
+    msg.starts_with(BLOCKED_CA_FAILURE)
 }
 
 /// What to tell a user when the transport dies mid-handshake: the
@@ -814,6 +870,88 @@ mod tests {
             [false, true, false, false, false],
             "the origin must observe resumption only in the matching connector/origin"
         );
+    }
+
+    // A chain the trust store accepts still fails when one of its keys
+    // is blocked, and the failure names the blocklist instead of the
+    // trust-store hint. The same trusted server passes without the
+    // block, so the refusal comes from the list alone.
+    #[tokio::test]
+    async fn a_blocked_key_fails_a_chain_the_trust_store_accepts() {
+        use boring::ssl::SslAcceptor;
+        use tokio::io::AsyncWriteExt;
+
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let x509 = X509::from_der(cert.cert.der()).unwrap();
+        // Not under cache_dir(): an exported DONSETCH_CACHE_DIR would put
+        // the bundle in a shared cache that outlives the run.
+        let directory = std::env::temp_dir()
+            .join("donsetch-test")
+            .join(crate::handles::random_base62(16));
+        std::fs::create_dir_all(&directory).unwrap();
+        let bundle = directory.join("trusted.pem");
+        std::fs::write(&bundle, cert.cert.pem()).unwrap();
+        // Nextest isolates this owned trust bundle from every other test.
+        unsafe { std::env::set_var("SSL_CERT_FILE", &bundle) };
+        let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
+        acceptor.set_certificate(&x509).unwrap();
+        acceptor
+            .set_private_key(
+                &boring::pkey::PKey::private_key_from_der(&cert.signing_key.serialize_der())
+                    .unwrap(),
+            )
+            .unwrap();
+        let acceptor = acceptor.build();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (tcp, _) = listener.accept().await.unwrap();
+                // The refused handshake fails here too; only the
+                // accepted one gets a reply.
+                if let Ok(mut stream) = tokio_boring::accept(&acceptor, tcp).await {
+                    let _ = stream.write_all(b"ok").await;
+                }
+            }
+        });
+
+        let profile = BrowserProfile::chrome_150(crate::profile::Platform::Linux);
+        let blocked: &'static [[u8; 32]] = Box::leak(Box::new([boring::sha::sha256(
+            &x509.public_key().unwrap().public_key_to_der().unwrap(),
+        )]));
+        let sessions = new_session_store();
+        for (keys, expect_blocked) in [
+            (blocked, true),
+            (crate::transport::ca_blocklist::COMPROMISED_CA_KEYS, false),
+        ] {
+            let connector =
+                build_connector_with(&profile, HandshakeProfile::ChromeTrue, keys).unwrap();
+            let tcp = TcpStream::connect(address).await.unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                connect(
+                    &profile,
+                    &connector,
+                    "localhost",
+                    tcp,
+                    &sessions,
+                    "localhost",
+                    HandshakeProfile::ChromeTrue,
+                ),
+            )
+            .await
+            .unwrap();
+            if expect_blocked {
+                let Err(FetchError::Tls(msg)) = result else {
+                    panic!("a blocked key must fail the handshake");
+                };
+                assert!(is_blocked_ca_failure(&msg), "{msg}");
+                assert!(is_cert_verify_failure(&msg), "{msg}");
+            } else {
+                assert!(result.is_ok(), "the trusted chain must pass unblocked");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     struct BogusErr(String);

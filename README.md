@@ -209,6 +209,16 @@ DONSETCH_BROWSER_BACKEND=cloakbrowser \
   CLOAKBROWSER_BINARY_PATH=/path/to/chrome donsetch doctor --deep
 ```
 
+You do not have to install CloakBrowser yourself: with auto-download on, DonSeTch fetches the pinned release from GitHub the first time the cloak backend is needed (a tier-2 fetch or `doctor`), unpacks it into its cache and reuses it from then on.
+
+```toml
+[browser]
+backend = "cloak"
+cloak_auto_download = true
+```
+
+The same from the environment: `DONSETCH_BROWSER__BACKEND=cloak DONSETCH_BROWSER__CLOAK_AUTO_DOWNLOAD=true donsetch doctor`.
+
 Aliases: `original` for `chromium`, `original-headless` for `headless`. Public CloakBrowser downloads are opt-in (`DONSETCH_CLOAK_AUTO_DOWNLOAD=1`) and verified: Ed25519-signed `SHA256SUMS`, manifest bound to the requested Chromium version, archive SHA-256 checked, unsafe paths rejected. `CLOAKBROWSER_VERSION` pins a version. CloakBrowser binaries are never bundled in releases or images.
 
 </details>
@@ -652,6 +662,8 @@ dns_cache_ttl_secs = 30 # seconds a resolved name is reused in-process, 0 disabl
 [bypass]
 max_daily = 100
 ```
+
+> ⚠️ **Keep `h3` off for now.** The h3 lane does not verify server certificates yet: no trust-store check and no hostname check. With `h3 = true`, once a host advertises HTTP/3 over a verified HTTPS response, later fetches go over QUIC to the advertised port and accept whatever certificate answers there, so anyone able to intercept that UDP traffic can serve content in the host's name. The default (`h3 = false`) is not affected.
 
 Booleans take `true`/`false`, enums take their listed spellings.
 

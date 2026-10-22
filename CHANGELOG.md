@@ -5,6 +5,50 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- The README's browser-backend section says DonSeTch can install CloakBrowser
+  itself: with `browser.backend = "cloak"` and
+  `browser.cloak_auto_download = true` it downloads the pinned release the
+  first time the backend is needed and reuses it from the cache. It shows the
+  two settings as TOML and as `DONSETCH_BROWSER__*` environment variables.
+
+### Fixed
+
+- CloakBrowser could never be installed on Windows. The installer saves the
+  downloaded release asset to a temporary file with no extension, then chose
+  the unpacker from that file's extension, so the `windows-x64` zip always
+  went to the tar reader and failed with `read tar entry: invalid gzip
+  header` after the download and signature checks had passed. The format now
+  comes from the asset name. Linux and macOS ship `.tar.gz` and were not
+  affected.
+
+### Security
+
+- `zip` 2.4.2 to 9.0.5, clearing three advisories that are fixed only in 9.x
+  (RUSTSEC-2026-0367 through 0369: SUID/SGID bits kept on extraction, and
+  symlinks that escape the destination or carry permissions through, all in
+  `ZipArchive::extract`). DonSeTch never called `extract`: the CloakBrowser
+  installer and `build.rs` read entries themselves. The bump clears the
+  `cargo-deny` gate, and the CloakBrowser extractor gains tests for
+  traversal and symlink entries. The crate now asks for `deflate-flate2`,
+  not `deflate`, so flate2 keeps its miniz_oxide backend build-wide (#373).
+- The HTTP tier refuses TLS chains through the eight eMudhra intermediate CA
+  keys published as compromised in October 2026
+  (<https://emudhra.we-have-a-problem.com/>), whatever the trust store says.
+  On Windows, the HTTP tier accepted them until now: Windows still trusts AAA
+  Certificate Services, the root above the Sectigo cross-signs, and blocks
+  the intermediates through revocation, which DonSeTch does not check. The
+  match is on the public key, so both certificates of each key are covered.
+  A refusal is reported as `tls.verify` with its own message and next action,
+  never the advice to trust another CA bundle.
+- `rustls-webpki` 0.103.16, `webpki-roots` and `webpki-root-certs` 1.0.10 for
+  the same incident (RUSTSEC-2026-0381 through 0383): the rustls clients
+  (login, `doctor`, BYOK search, downloads) reject paths through those keys,
+  and the bundled roots drop emSign ECC Root CA - G3.
+
 ## [4.10.1] - 2026-10-14
 
 ### Added
