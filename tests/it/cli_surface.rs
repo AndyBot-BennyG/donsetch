@@ -325,8 +325,15 @@ fn the_pool_toggle_shapes_are_intact() {
 #[test]
 fn mcp_response_mode_reports_the_installed_source() {
     let sb = Sandbox::new("mcp-mode");
-    let status = |env: &[(&str, &str)]| {
-        let out = sb.run_with(&["status", "--json"], env);
+    let status = |extra_env: &[(&str, &str)]| {
+        // Mode/source reporting does not depend on the update endpoint.
+        let mut env = vec![
+            ("DONSETCH_PROXY__FROM_ENVIRONMENT", "false"),
+            ("DONSETCH_PROXY__HTTPS", "http://127.0.0.1:0"),
+            ("DONSETCH_PROXY__NO_PROXY", ""),
+        ];
+        env.extend_from_slice(extra_env);
+        let out = sb.run_with(&["status", "--json"], &env);
         assert!(out.status.success(), "{}", stderr(&out));
         let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
         doc["status"]["mcp"].clone()
