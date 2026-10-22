@@ -663,8 +663,6 @@ dns_cache_ttl_secs = 30 # seconds a resolved name is reused in-process, 0 disabl
 max_daily = 100
 ```
 
-> ⚠️ **Keep `h3` off for now.** The h3 lane does not verify server certificates yet: no trust-store check and no hostname check. With `h3 = true`, once a host advertises HTTP/3 over a verified HTTPS response, later fetches go over QUIC to the advertised port and accept whatever certificate answers there, so anyone able to intercept that UDP traffic can serve content in the host's name. The default (`h3 = false`) is not affected.
-
 Booleans take `true`/`false`, enums take their listed spellings.
 
 - `donsetch config show` prints every knob with its value **and its origin** (default, legacy, file, env).

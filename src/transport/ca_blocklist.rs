@@ -5,6 +5,10 @@ use boring::x509::X509Ref;
 
 /// SHA-256 of the DER SubjectPublicKeyInfo of every blocked CA key.
 pub(crate) const COMPROMISED_CA_KEYS: &[[u8; 32]] = &[
+    // Adding a key here: also bump VERSION in routes.rs. Saved h3 sessions
+    // resume without verifying the certificate again, so a session from a
+    // chain through the new key would keep working until it expires.
+    //
     // eMudhra, October 2026: the private keys can be recovered from the
     // certificates themselves (https://emudhra.we-have-a-problem.com/).
     // Each key has two certificates: one under its emSign G3 root and a
