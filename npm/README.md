@@ -23,7 +23,7 @@ Works with every MCP client (Claude Code, Cursor, OpenCode, Pi, Hermes) and as a
 | **Solve-and-bounce** | The browser solves the challenge and hands cookies to tier 1, which then fetches at full speed. The browser almost never fetches content. |
 | **Keyless search** | 10+ backends in parallel, fused by cross-engine consensus plus local semantic reranking. No keys, $0 forever. BYOK is optional. |
 | **Pixel-fusion PDF** | Glyphs and rendered pixels come from the same stream and are fused deterministically, with a per-region trust audit. Scanned PDFs auto-OCR. |
-| **Token control** | Links render as `[text](L12)` and results as `S1…Sn`, so `fetch S3` costs 3 tokens instead of 80. `focus`, `toc`, `section`, `must_contain` and `since_last` cut a page to what the agent actually needs. |
+| **Token control** | MCP results use compact, unguessable link and search handles; one-shot CLI search prints reusable URLs. `focus`, `toc`, `section`, `must_contain` and `since_last` cut a page to what the agent actually needs. |
 | **Self-improving fetch** | Cookie lifetimes adapt, walls that beat a real browser twice go into cooldown, searches pre-solve known walls. All local state, receipts in `status` and `doctor --improve`. |
 | **One command to verify** | `donsetch doctor` sweeps config, search health, egress, TLS, browser, DNS, secret permissions, and fixes what is mechanically fixable. |
 

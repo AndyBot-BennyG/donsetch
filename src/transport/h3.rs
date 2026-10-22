@@ -175,6 +175,39 @@ fn quic_config_with(
     Ok(cfg)
 }
 
+/// HTTP/3 forbids connection-specific fields and requires lowercase names
+/// (RFC 9114 sections 4.2 and 4.2.2). Keep end-to-end fields unchanged.
+fn request_fields(headers: &[(String, String)]) -> Vec<h3::Header> {
+    let nominated: Vec<String> = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("connection"))
+        .flat_map(|(_, value)| value.split(','))
+        .map(|name| name.trim().to_ascii_lowercase())
+        .collect();
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let name = name.to_ascii_lowercase();
+            if name.starts_with(':')
+                || matches!(
+                    name.as_str(),
+                    "connection"
+                        | "proxy-connection"
+                        | "keep-alive"
+                        | "transfer-encoding"
+                        | "upgrade"
+                        | "host"
+                )
+                || nominated.contains(&name)
+                || (name == "te" && !value.trim().eq_ignore_ascii_case("trailers"))
+            {
+                return None;
+            }
+            Some(h3::Header::new(name.as_bytes(), value.as_bytes()))
+        })
+        .collect()
+}
+
 pub async fn h3_fetch_heat(
     req: &H3Request<'_>,
     profile: &crate::profile::BrowserProfile,
@@ -261,9 +294,7 @@ async fn h3_fetch_inner(
         h3::Header::new(b"user-agent", user_agent.as_bytes()),
         h3::Header::new(b"accept", accept.as_bytes()),
     ];
-    for (n, v) in &headers {
-        req_headers.push(h3::Header::new(n.as_bytes(), v.as_bytes()));
-    }
+    req_headers.extend(request_fields(&headers));
 
     let mut send_buf = vec![0u8; UDP_BUF];
     let mut recv_buf = vec![0u8; UDP_BUF];
@@ -592,6 +623,43 @@ pub async fn h3_fetch_direct(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_fields_drop_http1_connection_metadata() {
+        let fields = [
+            ("Connection", "keep-alive, X-Hop"),
+            ("X-Hop", "private"),
+            ("Keep-Alive", "timeout=5"),
+            ("Proxy-Connection", "keep-alive"),
+            ("Transfer-Encoding", "chunked"),
+            ("Upgrade", "h2c"),
+            ("Host", "example.test"),
+            ("TE", "gzip"),
+            ("Cookie", "session=value"),
+            ("Authorization", "Bearer value"),
+            ("X-End-To-End", "preserved"),
+            ("te", "trailers"),
+        ]
+        .map(|(name, value)| (name.to_string(), value.to_string()));
+        let sent = request_fields(&fields)
+            .into_iter()
+            .map(|field| {
+                (
+                    String::from_utf8(field.name().to_vec()).unwrap(),
+                    String::from_utf8(field.value().to_vec()).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sent,
+            vec![
+                ("cookie".into(), "session=value".into()),
+                ("authorization".into(), "Bearer value".into()),
+                ("x-end-to-end".into(), "preserved".into()),
+                ("te".into(), "trailers".into()),
+            ]
+        );
+    }
 
     // The h3 dial path must apply the same connect-time SSRF filter
     // as h1/h2: a host that resolves to a private/loopback address

@@ -5,9 +5,13 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.10.2] - 2026-10-22
 
 ### Added
+
+- `doctor` and human/JSON `status` report the configured MCP response mode
+  and its source (default, config file or environment). They explicitly note
+  that recognized clients may still require compatibility folding (#375).
 
 - The README's browser-backend section says DonSeTch can install CloakBrowser
   itself: with `browser.backend = "cloak"` and
@@ -16,6 +20,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two settings as TOML and as `DONSETCH_BROWSER__*` environment variables.
 
 ### Fixed
+
+- CLI search prints reusable URLs instead of process-local S-handles that
+  expired as soon as the command exited. MCP search keeps its session-local
+  references. Fetch also accepts an optional `@` before a valid handle (#374).
+- HTTP/3 removes HTTP/1 connection-specific request fields, including fields
+  named by `Connection`, and normalizes field names to lowercase. Conforming
+  HTTP/3 servers no longer reject requests carrying `connection: keep-alive`.
+- The sponsor-output CLI test uses a refused loopback proxy and an explicitly
+  missing browser, avoiding real browser launches and network delays that
+  timed out the Windows nightly.
+- Nightly heavy CI uses the version-insensitive dependency key, a separate
+  `heavy` target-cache shape, SHA-pinned Cargo caching, and the bounded sweep
+  and partial-save recovery used by ordinary CI (#379).
+- Config help reports the actual `mcp.text_only = true` default and no longer
+  claims the still-supported legacy environment variables were removed in v4.
 
 - CloakBrowser could never be installed on Windows. The installer saves the
   downloaded release asset to a temporary file with no extension, then chose
@@ -61,6 +80,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one skips verification. The default (`h3 = false`) was never affected.
 
 ### Changed
+
+- Update sha2 to 0.11.1, zstd to 0.14.2, winresource to 0.1.34, psl to
+  2.1.241 and serde_json to 1.0.154 (#368 through #372).
 
 - The READMEs name the setting that restores the split MCP result for
   integrations reading both surfaces: the npm README now gives

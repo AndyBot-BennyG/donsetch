@@ -210,3 +210,21 @@ impl Spinner {
         }
     }
 }
+
+/// Default MCP response posture; handshake compatibility can still fold a session.
+pub(crate) fn mcp_output_status() -> serde_json::Value {
+    serde_json::json!({
+        "mode": if crate::config::cfg().mcp.text_only { "text_only" } else { "split" },
+        "source": crate::config::mcp_text_only_source(),
+        "known_clients_may_fold": true,
+    })
+}
+
+pub(crate) fn mcp_output_summary() -> String {
+    let state = mcp_output_status();
+    format!(
+        "{} ({}); known clients may use compatibility folding",
+        state["mode"].as_str().unwrap_or("unknown"),
+        state["source"].as_str().unwrap_or("unknown")
+    )
+}

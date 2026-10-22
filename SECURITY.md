@@ -45,16 +45,24 @@ DonSeTch is a local MCP server that fetches web pages, searches the web, and cra
 
 ## Security posture
 
-DonSeTch runs locally as a stdio process. It does not:
+DonSeTch defaults to a local stdio MCP process. Optional HTTP transport opens
+an explicitly configured listener and supports bearer-token authentication.
+Do not expose an unauthenticated listener to untrusted networks.
 
-- Open a network port (stdio only).
-- Store credentials (no API keys, no accounts).
-- Phone home or telemetry.
-- Execute arbitrary code from fetched pages.
+The default research tools need no API keys or accounts. Optional BYOK
+providers store user-supplied credentials, and browser login/session support
+stores cookies in the local state directory. Credential-bearing state uses
+owner-only file permissions on Unix; Windows relies on the state directory's
+OS access controls. Cached pages and downloaded model files also live locally.
 
-DonSeTch does:
+Outbound requests include the requested research, version/update checks, and
+optional model or browser downloads. DonSeTch has no telemetry collection.
+PDFium libraries are downloaded at build time; OCR/reranker models are
+retrieved when needed. Browser escalation executes fetched page JavaScript
+inside Chromium, so the selected browser and the operating system should be
+kept current.
 
-- Download model files (OCR, reranker) from HuggingFace on first use, cached locally.
-- Download PDFium static libraries at build time.
-- Launch a headless browser process on tier 2 escalation.
-- Cache search results and cookies to `~/.cache/donsetch/`.
+HTTPS over TCP and the opt-in HTTP/3 path verify peer certificates against
+the configured trust store and refuse the known compromised CA keys listed
+in the transport. This incident blocklist is not a general OS revocation or
+Certificate Transparency implementation. HTTP/3 is disabled by default.

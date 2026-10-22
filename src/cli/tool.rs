@@ -79,7 +79,12 @@ pub async fn run(cmd: &str, args: &[String]) -> u8 {
 
     // Construct the shared Daemon (same as MCP).
     let daemon = match Daemon::new().await {
-        Ok(d) => Arc::new(d),
+        Ok(mut d) => {
+            // A CLI invocation exits after this call; S-handles cannot be
+            // resolved by the next process. Emit reusable URLs instead (#374).
+            d.search_handles = false;
+            Arc::new(d)
+        }
         Err(e) => {
             crate::diag!("[{cmd}] error: failed to initialize: {e}");
             return EXIT_PERMANENT;

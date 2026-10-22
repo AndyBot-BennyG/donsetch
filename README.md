@@ -50,7 +50,7 @@ Works with every MCP client (Claude Code, Cursor, OpenCode, Pi, Hermes) and as a
 | 🔑 **Keyless search** | 10+ backends in parallel, fused by cross-engine consensus plus local semantic reranking. No keys, $0 forever. BYOK optional. |
 | 📄 **Pixel-fusion PDF** | Glyphs and rendered pixels come from the same content stream and are fused deterministically, with a per-region trust audit. Scanned PDFs auto-OCR. |
 | 🧬 **Built from scratch** | Own HTTP/2 (HPACK, flow control, priority), own extraction engine, own PDF parser, own search aggregator, own crawl engine. |
-| 🔗 **Token control** | Links render as `[text](L12)`, results as `S1…Sn`, and `fetch S3` just works: 3 tokens instead of 80. `focus`, `toc`, `section`, `must_contain` and `since_last` each cut a page down to what the agent actually needs. |
+| 🔗 **Token control** | MCP results use compact, unguessable link and search handles; one-shot CLI search prints reusable URLs. `focus`, `toc`, `section`, `must_contain` and `since_last` each cut a page down to what the agent actually needs. |
 | 🪶 **~2.4k tool schema** | All four tools: 2,369 tokens (`o200k_base`, compact `tools/list` JSON). |
 | 🩺 **`doctor`** | One command sweeps config, search health, egress, TLS, browser, DNS, captive portal, secret-store permissions, and fixes what is mechanically fixable. |
 
@@ -279,7 +279,10 @@ For integrations that deliberately consume both surfaces, `[mcp] text_only =
 false` restores the split result for unrecognized clients. Known clients that
 drop one surface retain compatibility folding. From the environment, set
 `DONSETCH_MCP__TEXT_ONLY=false`. The default requires no client-specific
-configuration.
+configuration. `donsetch status --json` reports the configured mode and its
+source under `status.mcp`; `doctor` and human `status` show the same posture.
+The mode is the default for an unknown client: recognized clients can still
+require compatibility folding after their MCP handshake.
 
 </details>
 
@@ -434,7 +437,7 @@ No API key, no account. Six keyless engines across four independent index famili
 - **Learned engine health**: per-engine trust EWMAs and chronic-failure quarantine survive restarts, so dead engines get benched instead of burning fan-out slots on every query.
 - **Entity coverage**: anchor entities (B-tree, version numbers, years) are checked against results. Wrong entity, 0.3x.
 - **Honest reporting**: `weak=true` means low consensus, per-engine status is always visible, and there is no fake "no results".
-- **Warm handoff**: search pre-fetches the top results, so the next `fetch S1` serves from cache in ~3ms. It also pre-solves: if the top result's domain is a known wall, a bounded background solve starts while the agent reads.
+- **Warm handoff**: search pre-fetches the top results, so the next MCP fetch serves from cache in ~3ms. It also pre-solves: if the top result's domain is a known wall, a bounded background solve starts while the agent reads.
 - **Query compiler**: `site:`, `filetype:` and `intitle:` are sent only to engines that honor them, and SERP instant answers are extracted with their source URLs.
 
 Keyless quality, 110 questions across 11 niches with no keys: **95.5%** answer-in-snippet against Tavily's published 93.3% (LLM-graded). Reproduce with `python3 bench/search_quality.py --verbose`; methodology and per-niche numbers live in the script. Search-quality caching for the bench lives in `~/.cache/donsetch/bench-search/`, delete it when comparing binaries.

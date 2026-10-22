@@ -51,6 +51,8 @@ pub struct Daemon {
     byok: ByokSearcher,
     crawler: Crawler,
     handles: Arc<Mutex<crate::handles::HandleTable>>,
+    /// Session-local search references are useful only to a persistent caller.
+    pub(crate) search_handles: bool,
     history: Arc<std::sync::Mutex<crate::pages::history::PageHistory>>,
     /// Cookie revision from the atomic vault snapshot. Timestamps and size
     /// cannot identify equal-size replacements on every supported platform.
@@ -149,6 +151,7 @@ impl Daemon {
             byok: ByokSearcher::new(),
             crawler,
             handles: Arc::new(Mutex::new(crate::handles::HandleTable::load())),
+            search_handles: true,
             history: Arc::new(std::sync::Mutex::new(
                 crate::pages::history::PageHistory::load(),
             )),

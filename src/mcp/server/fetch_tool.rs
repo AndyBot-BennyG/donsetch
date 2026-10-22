@@ -561,6 +561,11 @@ mod failure_verdict_tests {
 }
 
 pub(super) async fn resolve_fetch_url(daemon: &Arc<Daemon>, raw: &str) -> Result<String, Value> {
+    let raw = raw.trim();
+    let raw = raw
+        .strip_prefix('@')
+        .filter(|id| crate::handles::is_handle(id))
+        .unwrap_or(raw);
     if raw.starts_with("http://") || raw.starts_with("https://") {
         return Ok(raw.to_string());
     }
@@ -4440,7 +4445,7 @@ pub(super) async fn bind_search_handles(
 pub(super) async fn bind_search_urls(daemon: &Arc<Daemon>, urls: &[String]) -> Vec<String> {
     // When handles are disabled (DONSETCH_URL_HANDLES=off), return
     // empty vec : search results show raw URLs instead.
-    if !crate::handles::handles_enabled() {
+    if !daemon.search_handles || !crate::handles::handles_enabled() {
         return Vec::new();
     }
     let mut ht = daemon.handles.lock().await;

@@ -1519,7 +1519,7 @@ pub(crate) fn fieldbook() -> &'static Fieldbook {
             "mcp",
             "text_only",
             FieldKind::Bool,
-            "false",
+            "true",
             "fold structuredContent into a leading [meta] text block for every client",
         ),
         (
@@ -2631,7 +2631,7 @@ pub fn show_legacy_markdown() -> String {
     for name in LEGACY_VARS {
         let (section, key) = legacy_target_of(name);
         out.push_str(&format!(
-            "| `{name}` | `{section}.{key}` | yes (deprecated, cut at v4) |\n"
+            "| `{name}` | `{section}.{key}` | yes (deprecated; still supported in v4) |\n"
         ));
     }
     out
@@ -2782,6 +2782,13 @@ fn installed() -> &'static Loaded {
 
 pub fn cfg() -> &'static DonsetchConfig {
     &installed().config
+}
+
+/// The installed layer supplying the default MCP output mode.
+pub(crate) fn mcp_text_only_source() -> &'static str {
+    installed()
+        .origin_of_path(&["mcp", "text_only"])
+        .unwrap_or("default")
 }
 
 pub(crate) fn browser_string_is_supplied(path: &str, value: &str, legacy_name: &str) -> bool {

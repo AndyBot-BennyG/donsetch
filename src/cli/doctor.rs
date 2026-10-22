@@ -405,6 +405,7 @@ pub async fn run(args: &[String]) {
 
     // 16. Config posture: layer conflicts, missing files, redaction.
     report!("Config posture", check_config_posture());
+    report!("MCP output", CheckResult::Pass(cli::mcp_output_summary()));
 
     // 16b. Local rules: how many, and whether they are enforced.
     report!("Local rules", check_rules());

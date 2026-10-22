@@ -49,7 +49,11 @@ impl Sandbox {
     fn cmd(&self, extra_env: &[(&str, &str)]) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_donsetch"));
         for (k, _) in std::env::vars_os() {
-            if k.to_string_lossy().starts_with("DONSETCH_") {
+            let name = k.to_string_lossy();
+            if name.starts_with("DONSETCH_")
+                || name.starts_with("DONGHOST_")
+                || name.starts_with("CLOAKBROWSER_")
+            {
                 cmd.env_remove(&k);
             }
         }
@@ -252,6 +256,17 @@ fn an_empty_export_explains_itself_on_stderr() {
 #[test]
 fn the_sponsor_line_is_labelled_human_only_and_switchable() {
     let sb = Sandbox::new("sponsor");
+    // This tests output placement, not browser/network health. An explicit
+    // missing browser and a refused loopback proxy keep doctor bounded on
+    // offline runners and prevent discovery of a developer's browser.
+    std::fs::write(
+        sb.root.join("donsetch.toml"),
+        format!(
+            "[browser]\nbackend = \"chromium\"\nchromium_path = {:?}\n[proxy]\nfrom_environment = false\nhttps = \"http://127.0.0.1:0\"\nhttp = \"http://127.0.0.1:0\"\n",
+            sb.root.join("missing-browser").to_string_lossy()
+        ),
+    )
+    .unwrap();
 
     // Present, labelled, with the URL, in the two human surfaces.
     for args in [vec!["proxy", "--help"], vec!["proxy", "list"]] {
@@ -305,4 +320,33 @@ fn the_pool_toggle_shapes_are_intact() {
         "{}",
         stderr(&unknown)
     );
+}
+
+#[test]
+fn mcp_response_mode_reports_the_installed_source() {
+    let sb = Sandbox::new("mcp-mode");
+    let status = |env: &[(&str, &str)]| {
+        let out = sb.run_with(&["status", "--json"], env);
+        assert!(out.status.success(), "{}", stderr(&out));
+        let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        doc["status"]["mcp"].clone()
+    };
+    let default = status(&[]);
+    assert_eq!(default["mode"], "text_only");
+    assert_eq!(default["source"], "default");
+    let env = status(&[("DONSETCH_MCP__TEXT_ONLY", "false")]);
+    assert_eq!(env["mode"], "split");
+    assert_eq!(env["source"], "DONSETCH_MCP__TEXT_ONLY");
+    assert_eq!(env["known_clients_may_fold"], true);
+    std::fs::write(sb.root.join("donsetch.toml"), "[mcp]\ntext_only = false\n").unwrap();
+    let file = status(&[]);
+    assert_eq!(file["mode"], "split");
+    assert!(file["source"].as_str().unwrap().starts_with("file:"));
+    let env = status(&[("DONSETCH_MCP__TEXT_ONLY", "true")]);
+    assert_eq!(env["mode"], "text_only");
+    assert_eq!(env["source"], "DONSETCH_MCP__TEXT_ONLY");
+    let cfg = sb.run(&["config", "show", "--markdown"]);
+    assert!(stdout(&cfg).contains("| `text_only` | bool | true |"));
+    let legacy = sb.run(&["config", "show", "--legacy"]);
+    assert!(!stdout(&legacy).contains("cut at v4"));
 }

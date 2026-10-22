@@ -228,9 +228,11 @@ jobs:
           RUSTC=$(rustc -vV | sed -n 's/^commit-hash: //p' | cut -c1-9)
           WF_HASH=$(python3 -c "import hashlib; print(hashlib.sha256(open('.github/workflows/ci.yml', 'rb').read().replace(b'\r\n', b'\n')).hexdigest()[:8])")
           PREFIX="tgt-${{ matrix.target }}-${CACHE_KIND}-${RUSTC}-v1-"
-          echo "TARGET_CACHE_PREFIX=$PREFIX" >> "$GITHUB_ENV"
-          echo "TARGET_CACHE_DEPS_PREFIX=${PREFIX}${DEP_HASH}-" >> "$GITHUB_ENV"
-          echo "TARGET_CACHE_KEY=${PREFIX}${DEP_HASH}-${WF_HASH}" >> "$GITHUB_ENV"
+          {
+            echo "TARGET_CACHE_PREFIX=$PREFIX"
+            echo "TARGET_CACHE_DEPS_PREFIX=${PREFIX}${DEP_HASH}-"
+            echo "TARGET_CACHE_KEY=${PREFIX}${DEP_HASH}-${WF_HASH}"
+          } >> "$GITHUB_ENV"
 
       # ~/.cargo only (CACHING.md, "Two caches per lane"). MUST run
       # before the target/ restore: on a partial match it cleans
@@ -459,10 +461,58 @@ jobs:
         uses: dtolnay/rust-toolchain@1.98
         with:
           targets: ${{ matrix.target }}
-      - name: Cache cargo + target
-        uses: Swatinem/rust-cache@v2
+      - name: Compute version-insensitive dep hash
+        shell: bash
+        run: echo "DEP_HASH=$(python3 scripts/dep-hash.py)" >> "$GITHUB_ENV"
+
+      # The ci-profile heavy tree has its own build shape and cache.
+      - name: Compute cache kind
+        shell: bash
+        run: echo "CACHE_KIND=heavy" >> "$GITHUB_ENV"
+
+      - name: Compute target/ cache key
+        shell: bash
+        run: |
+          RUSTC=$(rustc -vV | sed -n 's/^commit-hash: //p' | cut -c1-9)
+          WF_HASH=$(python3 -c "import hashlib; print(hashlib.sha256(open('.github/workflows/ci.yml', 'rb').read().replace(b'\r\n', b'\n')).hexdigest()[:8])")
+          PREFIX="tgt-${{ matrix.target }}-${CACHE_KIND}-${RUSTC}-v1-"
+          {
+            echo "TARGET_CACHE_PREFIX=$PREFIX"
+            echo "TARGET_CACHE_DEPS_PREFIX=${PREFIX}${DEP_HASH}-"
+            echo "TARGET_CACHE_KEY=${PREFIX}${DEP_HASH}-${WF_HASH}"
+          } >> "$GITHUB_ENV"
+
+      # ~/.cargo only (CACHING.md, "Two caches per lane"). MUST run
+      # before the target/ restore: on a partial match it cleans
+      # target/ even with cache-targets false. SHA-pinned: v2 moves.
+      - name: Cache ~/.cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: ${{ matrix.target }}-heavy-ci1
+          key: ${{ matrix.target }}
+          cache-targets: "false"
+          cache-on-failure: "true"
+          # Pull requests never save, as for target/.
+          save-if: ${{ github.event_name != 'pull_request' }}
+
+      - name: Restore target/
+        id: target-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: ${{ env.TARGET_CACHE_KEY }}
+          restore-keys: |
+            ${{ env.TARGET_CACHE_KEY }}
+            ${{ env.TARGET_CACHE_DEPS_PREFIX }}
+            ${{ env.TARGET_CACHE_PREFIX }}
+
+      # Marks the start of the build for the sweep (CACHING.md, "Keeping
+      # the cache bounded"). Nothing may read target/ between the
+      # restore and here, not even `du`.
+      - name: Prepare target/ for the sweep
+        if: steps.target-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        shell: bash
+        run: python3 scripts/ci-sweep.py prepare
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
@@ -470,6 +520,50 @@ jobs:
       - name: Heavy suite (soak, corpus, landmarks, live)
         run: cargo nextest run --profile ci --cargo-profile ci --target ${{ matrix.target }} -E 'test(soak) | test(corpus) | test(landmark)' --no-fail-fast
         timeout-minutes: 90
+
+      - name: Sweep target/
+        id: sweep
+        if: success() && steps.target-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          python3 scripts/ci-sweep.py sweep
+          cargo clean -p donsetch --profile ci --target ${{ matrix.target }}
+          cargo clean -p donsetch --profile ci
+
+      - name: Save target/
+        if: success() && steps.target-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v6
+        with:
+          path: target
+          key: ${{ env.TARGET_CACHE_KEY }}
+
+      # Red run, timeouts included: save UNSWEPT under a -partial- key so
+      # the next run resumes (CACHING.md, "When a run fails"). First stop
+      # leftover compilers, which keep writing after a step times out;
+      # TERM before KILL so make and cc can delete half-written output.
+      - name: Stop leftover build processes (red run)
+        if: failure() && steps.target-cache.outcome == 'success' && steps.target-cache.outputs.cache-hit != 'true' && steps.sweep.outcome == 'skipped' && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            names="cargo.exe cargo-nextest.exe rustc.exe build-script-build.exe cl.exe link.exe lld-link.exe cmake.exe"
+            for p in $names; do taskkill //T //IM "$p" >/dev/null 2>&1 || true; done
+            sleep 10
+            for p in $names; do taskkill //F //T //IM "$p" >/dev/null 2>&1 || true; done
+          else
+            names='cargo|cargo-nextest|rustc|build-script-build|cc|c\+\+|cc1|cc1plus|as|ld|ld\.lld|clang|cmake|make'
+            pkill -TERM -x "$names" || true
+            sleep 10
+            pkill -KILL -x "$names" || true
+          fi
+          sleep 2
+
+      - name: Save partial target/ (red run, unswept)
+        if: failure() && steps.target-cache.outcome == 'success' && steps.target-cache.outputs.cache-hit != 'true' && steps.sweep.outcome == 'skipped' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v6
+        with:
+          path: target
+          key: ${{ env.TARGET_CACHE_KEY }}-partial-${{ github.run_id }}-${{ github.run_attempt }}
 
   # ── Fuzz smoke: short bursts keep the corpus warm and catch shallow
   # panics before users do. Daemon aborts are the worst failure mode for

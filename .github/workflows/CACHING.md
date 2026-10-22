@@ -1,6 +1,6 @@
 # How CI caches Cargo builds
 
-This describes the caching in `ci.yml`'s `build-test` job, why it is shaped the way it is, and what to keep in mind when changing it. The workflow comments point back here; the two helper scripts are `scripts/dep-hash.py` and `scripts/ci-sweep.py`.
+This describes the caching in `ci.yml`'s `build-test` and `heavy` jobs, why it is shaped the way it is, and what to keep in mind when changing it. The workflow comments point back here; the two helper scripts are `scripts/dep-hash.py` and `scripts/ci-sweep.py`.
 
 ## What it is for
 
@@ -73,6 +73,16 @@ The next run finds the partial entry through the first restore key, which matche
 Neither cache is saved from a `pull_request` run. GitHub scopes a pull request's cache to its merge ref, so only later runs of that same pull request could restore it; `master` and other pull requests never can. A pull request that does not touch dependencies gets an exact hit from `master`'s entry and would not save anyway, so the rule only matters for dependency updates. Saving those would add roughly 0.5 to 1 GB per lane to the shared 10 GB pool. Because a restore marks `master`'s entries as used at the *start* of a job while a pull request's save lands at its *end*, a burst of dependency pull requests would get `master`'s entries evicted first.
 
 Pull requests still restore. Because they never save, the Windows lane can restore `master`'s test-built `full` entry for its `cargo check` run, which contains everything a check needs. That took the first Windows run of a pull request from 18 minutes to 4. It is safe only because nothing is written back: if pull requests ever start saving, the Windows lane needs its own key for them again.
+
+## Nightly heavy jobs
+
+The scheduled and manually dispatched `heavy` lanes use the same two-cache
+sequence as `build-test`: SHA-pinned rust-cache for `~/.cargo` only, then an
+explicit `target/` restore, prepare, build, sweep and save. Their key uses
+`kind=heavy`, keeping their ci-profile heavy-test artifacts separate from the
+ordinary lanes. Dependency and workflow hashes, partial-save recovery, and
+the release-version exemption follow the same rules above. An exact hit
+skips the sweep and save; a fallback saves a bounded replacement.
 
 ## Tags never save
 

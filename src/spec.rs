@@ -809,16 +809,17 @@ pub fn cli_command(tool: &ToolSpec) -> clap::Command {
 Redirects, bot walls and JS-shells escalate automatically through two \
 tiers; the output tells you what happened at every step. \
 Use --focus to narrow the content, --must-contain for a cheap \
-probe, and a result handle from a search result (donsetch fetch \
-@10hd73d) to fetch a result directly. \
+probe, or pass a URL from donsetch search to fetch that result. \
+MCP search handles belong to their server session and cannot be reused \
+in a separate CLI invocation. \
 --actions sends clicks/typing to a headless browser for \
 sites that need interaction."
         }
         "search" => {
             "Search the web across 10+ keyless engines, merged with \
 consensus ranking (no API keys needed). \
-Every result carries a short handle: donsetch fetch @<handle> \
-fetches it directly. \
+Results include reusable URLs: pass one to donsetch fetch <url>. \
+Session-local search handles are used only by the persistent MCP server. \
 Use --max-results to cap the list and --intent to pick a vertical \
 (web|news|code|paper|entity); the default auto-detects. \
 --json gives the full result envelope (titles, snippets, scores, \
@@ -1096,7 +1097,7 @@ mod tests {
         assert!(long_help.contains("handle"), "{long_help}");
         let long_search = cli_command(search_tool()).render_long_help().to_string();
         assert!(long_search.contains("--intent"), "{long_search}");
-        assert!(long_search.contains("handle"), "{long_search}");
+        assert!(long_search.contains("reusable URLs"), "{long_search}");
         let long_crawl = cli_command(crawl_tool()).render_long_help().to_string();
         assert!(long_crawl.contains("--resume"), "{long_crawl}");
     }

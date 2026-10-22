@@ -310,6 +310,7 @@ pub async fn run(args: &[String]) {
                     "outcome_demoted": o_demoted,
                     "outcome_keys": o_keys,
                 },
+                "mcp": cli::mcp_output_status(),
                 "deep_fingerprint": "not_probed",
             }
         });
@@ -321,6 +322,7 @@ pub async fn run(args: &[String]) {
     println!();
     cli::print_kv("version", &version_human);
     cli::print_kv("search", &search_human);
+    cli::print_kv("MCP output", &cli::mcp_output_summary());
     cli::print_kv("proxies", &proxies_human);
     cli::print_kv("cache", &cache_human);
     cli::print_kv("browser", &browser_human);

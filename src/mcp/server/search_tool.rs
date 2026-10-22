@@ -1183,6 +1183,74 @@ mod search_output_contract_tests {
     use crate::search::rank::Merged;
     use std::time::Duration;
 
+    #[tokio::test]
+    async fn cli_search_uses_urls_while_mcp_handles_stay_in_session() {
+        use super::render_search_outcome;
+        use crate::mcp::server::Daemon;
+        use crate::mcp::server::fetch_tool::resolve_fetch_url;
+        use std::sync::Arc;
+        // Nextest gives this test its own process and config/state root.
+        let mut daemon = Daemon::new().await.unwrap();
+        daemon.search_handles = false;
+        let cli = Arc::new(daemon);
+        let output = SearchOutcome {
+            results: vec![Merged {
+                title: "Answer".into(),
+                url: "https://example.com/answer".into(),
+                snippet: "Evidence".into(),
+                sources: vec![("bing".into(), 0)],
+                score: 0.9,
+                published: None,
+            }],
+            weak: false,
+            intent: Intent::Web,
+            report: Vec::new(),
+            cached: false,
+            elapsed: Duration::ZERO,
+            provider: None,
+            reranked: false,
+            instant: None,
+            stage_ms: Vec::new(),
+        };
+        let result = render_search_outcome(&cli, &output, 1).await;
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("1. https://example.com/answer")
+        );
+        assert!(
+            result["structuredContent"]["results"][0]
+                .get("handle")
+                .is_none()
+        );
+        let second = Arc::new(Daemon::new().await.unwrap());
+        let url = result["structuredContent"]["results"][0]["url"]
+            .as_str()
+            .unwrap();
+        assert_eq!(resolve_fetch_url(&second, url).await.unwrap(), url);
+        let mcp = render_search_outcome(&second, &output, 1).await;
+        let handle = mcp["structuredContent"]["results"][0]["handle"]
+            .as_str()
+            .unwrap();
+        assert_eq!(resolve_fetch_url(&second, handle).await.unwrap(), url);
+        assert_eq!(
+            resolve_fetch_url(&second, &format!("@{handle}"))
+                .await
+                .unwrap(),
+            url
+        );
+        // Never persist S-handles to fix the CLI: another session cannot resolve them.
+        assert!(resolve_fetch_url(&cli, handle).await.is_err());
+        assert!(
+            resolve_fetch_url(&second, "@https://example.com/")
+                .await
+                .is_err()
+        );
+        cli.shutdown().await;
+        second.shutdown().await;
+    }
+
     #[test]
     fn v471_search_health_counts_backends_not_topup_attempts() {
         use crate::search::{EngineReport, render_compact_markdown, render_markdown};
