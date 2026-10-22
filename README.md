@@ -277,9 +277,9 @@ const markdown = text.slice(end + 1).trimStart();
 
 For integrations that deliberately consume both surfaces, `[mcp] text_only =
 false` restores the split result for unrecognized clients. Known clients that
-drop one surface retain compatibility folding. The typed
-`DONSETCH_MCP__TEXT_ONLY` setting and legacy `DONSETCH_MCP_TEXT_ONLY=1`
-remain supported. The default requires no client-specific configuration.
+drop one surface retain compatibility folding. From the environment, set
+`DONSETCH_MCP__TEXT_ONLY=false`. The default requires no client-specific
+configuration.
 
 </details>
 

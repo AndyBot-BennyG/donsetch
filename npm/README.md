@@ -82,7 +82,7 @@ Downloads the prebuilt binary for your platform from [GitHub Releases](https://g
 
 Prefer HTTP over stdio? `donsetch mcp --http --port 8765`, clients connect to `http://localhost:8765/mcp`. Sessions, cancellation, `/health`, token auth (`DONSETCH_HTTP_TOKEN`) and per-request timeouts are documented in `donsetch mcp --help`.
 
-Every client gets the `[meta]` fold by default: compact state and source evidence arrive together in `content`, including for unknown bridges and OpenCode's generic `cli` handshake. Raw MCP returns content blocks; some bridges join them into a string. Parse the leading `[meta]` JSON line, then read the source text. See the full README for the explicit split-output option.
+Every client gets the `[meta]` fold by default: compact state and source evidence arrive together in `content`, including for unknown bridges and OpenCode's generic `cli` handshake. Raw MCP returns content blocks; some bridges join them into a string. Parse the leading `[meta]` JSON line, then read the source text. To get the split result instead (`structuredContent` kept) for clients DonSeTch does not recognize, set `[mcp] text_only = false`, or `DONSETCH_MCP__TEXT_ONLY=false` in the environment; details in the [full README](https://github.com/dondai44423/donsetch#readme).
 
 ### 2. As a CLI (for humans and scripts)
 
