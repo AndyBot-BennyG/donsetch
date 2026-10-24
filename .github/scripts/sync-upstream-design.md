@@ -90,3 +90,45 @@ The task body requests a Hermes cron job that checks:
 This is a non-trivial addition that warrants its own task. It is out of scope
 for this PR and should be implemented as a follow-up. See the follow-up task
 created alongside this PR.
+
+## Checkpoint rollback guard (added round 1)
+
+### Problem
+
+`workflow_dispatch` accepts any non-empty `upstream_tag`. The original
+implementation equated "tag differs from CURRENT" with "forward sync needed",
+which is incorrect: pinning an older valid tag (e.g. `v4.10.1` when CURRENT is
+`v4.10.2`) produces an already-up-to-date merge but commits `.upstream-sync-ref`
+with the older tag. Merging that PR rolls back the checkpoint and makes the next
+scheduled run re-propose releases already integrated.
+
+### Fix
+
+Before creating a branch or writing `.upstream-sync-ref`, the workflow now
+calls the GitHub Compare API:
+
+    gh api repos/<UPSTREAM_REPO>/compare/<CURRENT>...<CANDIDATE>
+
+The Compare API returns one of four `status` values:
+
+| status     | meaning                               | action        |
+|------------|---------------------------------------|---------------|
+| `ahead`    | CANDIDATE is ahead of CURRENT         | proceed       |
+| `identical`| same commit (different tag name)      | no-op, exit 0 |
+| `behind`   | CANDIDATE is behind CURRENT (rollback)| reject, exit 0|
+| `diverged` | unrelated histories                   | reject, exit 0|
+
+Any API error also rejects (fail-safe). The string-equality check is retained
+as a fast-path for the common "already up-to-date on schedule" case.
+
+A pinned tag that does not exist on the upstream repo is caught in the
+"Determine upstream tag" step via `gh api repos/.../releases/tags/<TAG>` before
+the Compare call is ever made.
+
+### Test coverage
+
+`scripts/test-sync-decision.sh` exercises the decision block with a mock `gh`
+covering all five outcomes (equal, ahead, behind, diverged, identical, error)
+plus dry-run propagation (17 assertions). Run with:
+
+    bash scripts/test-sync-decision.sh

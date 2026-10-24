@@ -64,6 +64,14 @@ jobs:
           set -euo pipefail
           PINNED="${{ github.event.inputs.upstream_tag }}"
           if [ -n "$PINNED" ]; then
+            # Validate that the pinned tag actually exists on the upstream repo.
+            # gh api exits non-zero on a 404; surface a clear error instead of
+            # silently passing an invalid tag through to later steps.
+            if ! gh api "repos/${UPSTREAM_REPO}/releases/tags/${PINNED}" \
+                   --jq '.tag_name' >/dev/null 2>&1; then
+              echo "::error::Pinned tag '${PINNED}' does not exist on ${UPSTREAM_REPO}."
+              exit 1
+            fi
             echo "Using pinned tag: $PINNED"
             echo "tag=$PINNED" >> "$GITHUB_OUTPUT"
           else
@@ -87,6 +95,8 @@ jobs:
 
       - name: Check if sync is needed
         id: decision
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           UPSTREAM="${{ steps.upstream.outputs.tag }}"
@@ -95,12 +105,39 @@ jobs:
           echo "Upstream: $UPSTREAM  |  Last synced: $CURRENT"
 
           if [ "$UPSTREAM" = "$CURRENT" ]; then
-            echo "No upstream movement. Nothing to do."
+            echo "No upstream movement (equal tags). Nothing to do."
             echo "needed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "Sync needed: $CURRENT -> $UPSTREAM"
+          # Guard against checkpoint rollback: verify UPSTREAM is a strict
+          # forward descendant of CURRENT in the upstream repo's commit graph.
+          # GitHub Compare API returns:
+          #   "ahead"    -> UPSTREAM is ahead of CURRENT (forward sync, proceed)
+          #   "identical"-> same commit (treated as equal, already handled above)
+          #   "behind"   -> UPSTREAM is behind CURRENT (rollback — reject)
+          #   "diverged" -> unrelated histories (reject)
+          COMPARE_STATUS=$(gh api \
+            "repos/${UPSTREAM_REPO}/compare/${CURRENT}...${UPSTREAM}" \
+            --jq '.status' 2>/dev/null || echo "error")
+
+          echo "Compare status (${CURRENT}...${UPSTREAM}): $COMPARE_STATUS"
+
+          if [ "$COMPARE_STATUS" = "ahead" ]; then
+            echo "Forward sync confirmed: $CURRENT -> $UPSTREAM"
+          elif [ "$COMPARE_STATUS" = "identical" ]; then
+            echo "Tags resolve to identical commits. Nothing to do."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            # "behind", "diverged", or API error — refuse to proceed.
+            echo "::error::Rejecting sync: compare status '${COMPARE_STATUS}'."
+            echo "::error::Candidate tag ${UPSTREAM} is not a forward descendant of ${CURRENT}."
+            echo "::error::Merging it would roll back the checkpoint. Exiting safely."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           echo "needed=true" >> "$GITHUB_OUTPUT"
           SLUG=$(echo "$UPSTREAM" | sed 's/^v//')
           BRANCH="sync/upstream-${SLUG}"
