@@ -1,0 +1,275 @@
+name: Sync Upstream
+# Checks for new upstream DonSeTch release tags and opens a reviewable PR.
+# Design decisions are documented in scripts/sync-upstream-design.md.
+#
+# NEVER AUTO-MERGES. This workflow's job ends at "PR open and ready for review."
+#
+# Triggers:
+#   - Daily at 06:30 UTC (schedule cron)
+#   - Manual dispatch (with optional tag pin and dry-run flag)
+#
+# Required permissions: contents=write, pull-requests=write (set below).
+
+on:
+  schedule:
+    - cron: '30 6 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: >
+          Pin to a specific upstream tag (e.g. v4.11.0).
+          Leave blank to auto-detect the latest release.
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry-run: detect without pushing or opening a PR'
+        required: false
+        default: 'false'
+        type: boolean
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: Check and sync upstream
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPO: dondai44423/donsetch
+      UPSTREAM_URL: https://github.com/dondai44423/donsetch.git
+      SYNC_REF_FILE: .upstream-sync-ref
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Determine upstream tag
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PINNED="${{ github.event.inputs.upstream_tag }}"
+          if [ -n "$PINNED" ]; then
+            echo "Using pinned tag: $PINNED"
+            echo "tag=$PINNED" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq '.tag_name')
+            echo "Latest upstream release: $TAG"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read last-synced ref
+        id: current
+        run: |
+          set -euo pipefail
+          if [ -f "$SYNC_REF_FILE" ]; then
+            REF=$(cat "$SYNC_REF_FILE" | tr -d '[:space:]')
+            echo "Last synced to: $REF"
+            echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          else
+            echo "No $SYNC_REF_FILE found; assuming baseline v4.10.2"
+            echo "ref=v4.10.2" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check if sync is needed
+        id: decision
+        run: |
+          set -euo pipefail
+          UPSTREAM="${{ steps.upstream.outputs.tag }}"
+          CURRENT="${{ steps.current.outputs.ref }}"
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+          echo "Upstream: $UPSTREAM  |  Last synced: $CURRENT"
+
+          if [ "$UPSTREAM" = "$CURRENT" ]; then
+            echo "No upstream movement. Nothing to do."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Sync needed: $CURRENT -> $UPSTREAM"
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+          SLUG=$(echo "$UPSTREAM" | sed 's/^v//')
+          BRANCH="sync/upstream-${SLUG}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code origin "refs/heads/${BRANCH}" >/dev/null 2>&1; then
+            echo "Branch $BRANCH already exists on remote -- skipping."
+            echo "branch_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dry-run summary
+        if: >
+          steps.decision.outputs.needed == 'true' &&
+          steps.decision.outputs.dry_run == 'true'
+        run: |
+          echo "=== DRY-RUN ==="
+          echo "Would create branch: ${{ steps.decision.outputs.branch }}"
+          echo "Would merge: ${{ steps.current.outputs.ref }} -> ${{ steps.upstream.outputs.tag }}"
+          echo "No changes pushed."
+
+      - name: Fetch upstream tag
+        if: >
+          steps.decision.outputs.needed == 'true' &&
+          steps.decision.outputs.dry_run != 'true' &&
+          steps.decision.outputs.branch_exists != 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.upstream.outputs.tag }}"
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch upstream "refs/tags/${TAG}:refs/tags/${TAG}" --no-tags
+          echo "Fetched upstream tag $TAG"
+
+      - name: Create sync branch and merge
+        if: >
+          steps.decision.outputs.needed == 'true' &&
+          steps.decision.outputs.dry_run != 'true' &&
+          steps.decision.outputs.branch_exists != 'true'
+        id: merge
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.upstream.outputs.tag }}"
+          BRANCH="${{ steps.decision.outputs.branch }}"
+
+          git checkout -b "$BRANCH"
+          # Record the new upstream ref so it lands in the merge commit.
+          echo "$TAG" > "$SYNC_REF_FILE"
+
+          # --no-commit lets us stage SYNC_REF_FILE into the merge commit.
+          set +e
+          git merge --no-ff --no-commit "refs/tags/${TAG}"
+          MERGE_STATUS=$?
+          set -e
+
+          if [ $MERGE_STATUS -eq 0 ]; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+            git add "$SYNC_REF_FILE"
+            git commit -m "chore(sync): merge upstream ${TAG} into fork"
+            echo "Clean merge."
+          else
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+            echo "Conflicts detected -- committing markers for review."
+            git add -A
+            git commit -m "chore(sync): CONFLICTS merging upstream ${TAG} -- needs manual resolution"
+          fi
+
+      - name: Check patch-file overlap
+        if: >
+          steps.decision.outputs.needed == 'true' &&
+          steps.decision.outputs.dry_run != 'true' &&
+          steps.decision.outputs.branch_exists != 'true'
+        id: overlap
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.upstream.outputs.tag }}"
+          BASE="${{ steps.current.outputs.ref }}"
+          DIFF=$(git diff "refs/tags/${BASE}..refs/tags/${TAG}" \
+            -- src/spec.rs src/mcp/server/fetch_tool.rs --stat 2>/dev/null || true)
+          if [ -n "$DIFF" ]; then
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+            {
+              printf 'stat<<EODIFF\n'
+              echo "$DIFF"
+              printf 'EODIFF\n'
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "touched=false" >> "$GITHUB_OUTPUT"
+            printf 'stat=No changes to src/spec.rs or src/mcp/server/fetch_tool.rs between %s and %s.\n' "$BASE" "$TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch release notes
+        if: >
+          steps.decision.outputs.needed == 'true' &&
+          steps.decision.outputs.dry_run != 'true' &&
+          steps.decision.outputs.branch_exists != 'true'
+        id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.upstream.outputs.tag }}"
+          BASE="${{ steps.current.outputs.ref }}"
+          NOTES=$(gh api "repos/${UPSTREAM_REPO}/releases/tags/${TAG}" \
+            --jq '.body // "No release notes available."' 2>/dev/null \
+            || echo "No release notes available.")
+          {
+            printf 'body<<EOBODY\n'
+            echo "$NOTES" | head -100
+            printf 'EOBODY\n'
+          } >> "$GITHUB_OUTPUT"
+          printf 'range=%s..%s\n' "$BASE" "$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Push sync branch
+        if: >
+          steps.decision.outputs.needed == 'true' &&
+          steps.decision.outputs.dry_run != 'true' &&
+          steps.decision.outputs.branch_exists != 'true'
+        run: |
+          BRANCH="${{ steps.decision.outputs.branch }}"
+          git push origin "$BRANCH"
+          echo "Pushed $BRANCH to origin."
+
+      - name: Open PR
+        if: >
+          steps.decision.outputs.needed == 'true' &&
+          steps.decision.outputs.dry_run != 'true' &&
+          steps.decision.outputs.branch_exists != 'true'
+        id: open_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SYNC_BRANCH: ${{ steps.decision.outputs.branch }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          CURRENT_REF: ${{ steps.current.outputs.ref }}
+          MERGE_CLEAN: ${{ steps.merge.outputs.clean }}
+          PATCH_TOUCHED: ${{ steps.overlap.outputs.touched }}
+          PATCH_STAT: ${{ steps.overlap.outputs.stat }}
+          RELEASE_NOTES: ${{ steps.notes.outputs.body }}
+          COMMIT_RANGE: ${{ steps.notes.outputs.range }}
+          UPSTREAM_REPO: ${{ env.UPSTREAM_REPO }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/open-sync-pr.py
+
+      - name: Fail loudly on conflicts
+        if: >
+          steps.decision.outputs.needed == 'true' &&
+          steps.decision.outputs.dry_run != 'true' &&
+          steps.decision.outputs.branch_exists != 'true' &&
+          steps.merge.outputs.clean == 'false'
+        run: |
+          echo "::error::Upstream merge produced conflicts. A draft PR has been opened."
+          echo "::error::Resolve conflict markers, verify the raw-passthrough patch, then re-push."
+          exit 1
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "=== Sync-upstream summary ==="
+          echo "Upstream tag  : ${{ steps.upstream.outputs.tag || 'unknown' }}"
+          echo "Last synced   : ${{ steps.current.outputs.ref || 'unknown' }}"
+          echo "Sync needed   : ${{ steps.decision.outputs.needed || 'false' }}"
+          echo "Dry run       : ${{ github.event.inputs.dry_run || 'false' }}"
+          echo "Branch exists : ${{ steps.decision.outputs.branch_exists || 'false' }}"
+          echo "Merge clean   : ${{ steps.merge.outputs.clean || 'n/a' }}"
+          echo "PR URL        : ${{ steps.open_pr.outputs.pr_url || 'n/a' }}"
