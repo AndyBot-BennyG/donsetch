@@ -272,6 +272,17 @@ const FETCH_PARAMS: &[ParamSpec] = &[
         ),
     },
     ParamSpec {
+        name: "raw",
+        flag: "raw",
+        kind: ParamKind::SetTrue,
+        cli: CliKind::Flag,
+        required: false,
+        help: "Return the raw HTML body instead of DonSift-extracted markdown. Tier-1: the decoded HTTP response body. Tier-2 (post-solve-and-bounce): the browser's fully-rendered DOM HTML after any challenge is cleared. Default false; existing callers are unaffected.",
+        mcp_help: Some(
+            "Return raw HTML instead of extracted markdown. Tier-1: decoded HTTP response body. Tier-2 (after challenge solve): fully-rendered DOM HTML. Default false; omit for standard markdown output.",
+        ),
+    },
+    ParamSpec {
         name: "media",
         flag: "media",
         kind: ParamKind::SetTrue,

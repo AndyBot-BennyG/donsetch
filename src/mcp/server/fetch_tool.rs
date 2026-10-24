@@ -1985,6 +1985,10 @@ async fn fetch_single_inner(
     }
 
     // === Tier-1 extraction (when we have a body) ===
+    let want_raw = args.get("raw").and_then(Value::as_bool).unwrap_or(false);
+    // Accumulates raw HTML when `want_raw=true`: tier-1 sets it from the
+    // decoded response body; tier-2 sets it from the post-solve DOM string.
+    let mut raw_html: Option<String> = None;
     let mut ghost_html = None;
     let mut final_ex: Option<extract::Extracted> = None;
     let mut final_tier: &str = tier_used;
@@ -2021,6 +2025,14 @@ async fn fetch_single_inner(
                 })),
             );
         }
+        // raw passthrough: skip DonSift extraction and capture the decoded
+        // response body.  The normal extraction path is skipped entirely when
+        // raw=true so none of the thin/challenge/ghost-escalation logic below
+        // can promote a clean tier-1 response to a ghost fetch.
+        if want_raw {
+            raw_html = Some(crate::extract::charset::decode(&o.body, &ct));
+            final_url = o.url.clone();
+        } else {
         match extract::extract_off_worker(&o.body, &ct, &o.url, &opts).await {
             Ok(e) => {
                 final_url = o.url.clone();
@@ -2075,6 +2087,7 @@ async fn fetch_single_inner(
                 );
             }
         }
+        } // else (want_raw) block
     }
 
     let ex_thin = final_ex.as_ref().map(|e| e.thin).unwrap_or(false);
@@ -2269,9 +2282,15 @@ async fn fetch_single_inner(
         match ghost_result {
             Ok((e, tier2, status, furl, html)) => {
                 if stitch {
-                    ghost_html = Some((html, furl.clone()));
+                    ghost_html = Some((html.clone(), furl.clone()));
                 }
-                final_ex = Some(e);
+                // raw passthrough: capture the browser's fully-rendered DOM
+                // so the caller receives post-challenge HTML, not markdown.
+                if want_raw {
+                    raw_html = Some(html);
+                } else {
+                    final_ex = Some(e);
+                }
                 final_tier = tier2;
                 final_status = status;
                 final_url = furl;
@@ -2494,6 +2513,35 @@ async fn fetch_single_inner(
     }
 
     let Some(ex) = final_ex else {
+        // raw passthrough: when raw=true and a tier (1 or 2) produced HTML,
+        // raw_html is set and final_ex is None.  Return the HTML directly,
+        // bypassing DonSift extraction, link-handle binding, and all
+        // post-extraction logic (none of which applies to a raw response).
+        if let Some(html) = raw_html {
+            let display_url = if adapter_used.is_some() {
+                orig_url.clone()
+            } else {
+                final_url.clone()
+            };
+            return json!({
+                "content": [{"type": "text", "text": html}],
+                "structuredContent": {
+                    "ok": true,
+                    "raw": true,
+                    "url": display_url,
+                    "tier": final_tier,
+                    "status": final_status,
+                },
+                "_meta": {
+                    "com.donsetch/fetch-debug": {
+                        "tier": final_tier,
+                        "status": (final_status != 0).then_some(final_status),
+                        "elapsed_ms": t0.elapsed().as_millis(),
+                        "raw": true,
+                    }
+                },
+            });
+        }
         return tool_error_structured(
             "all fetch tiers exhausted : no response received",
             "permanent",
@@ -2824,6 +2872,38 @@ pub(super) async fn ghost_escalate(
     accept_language: Option<&str>,
     session_stamp: &str,
 ) -> Result<(extract::Extracted, &'static str, u16, String, String), GhostFailure> {
+    // Test-only seam: when DONSETCH_GHOST_MOCK_HTML is set, skip all browser
+    // machinery and return the env-var value as if the browser had rendered it.
+    // This enables deterministic unit tests for the tier-2 raw passthrough path
+    // without launching Chromium.  Production builds never set this variable;
+    // the guard is #[cfg(test)] so it is compiled out entirely in release mode.
+    #[cfg(test)]
+    if let Ok(mock_html) = std::env::var("DONSETCH_GHOST_MOCK_HTML") {
+        let e = extract::Extracted {
+            markdown: mock_html.clone(),
+            title: None,
+            byline: None,
+            published: None,
+            site: None,
+            total_chars: mock_html.len(),
+            next_offset: None,
+            blocks_total: 0,
+            blocks_shown: 0,
+            focus_omitted: false,
+            tokens_est: mock_html.len() / 4,
+            thin: false,
+            content_kind: extract::ContentKind::Page,
+            lang: "en".into(),
+            quality: 1.0,
+            pdf_pages: None,
+            images: vec![],
+            fingerprint: None,
+            via: None,
+            partial: None,
+        };
+        return Ok((e, "ghost-mock", 200, url.to_string(), mock_html));
+    }
+
     let render_state = GhostState::load();
     let t0 = std::time::Instant::now();
     // v4 E2: ghost agrees with the persona pin (viewport + locale).
@@ -4848,6 +4928,377 @@ across every major social platform today.";
             !super::looks_like_shell_text(hn),
             "short legit listings must not classify as a shell"
         );
+    }
+}
+
+#[cfg(test)]
+mod raw_passthrough_tests {
+    use crate::spec;
+    use serde_json::json;
+
+    fn fetch_spec() -> &'static spec::ToolSpec {
+        spec::TOOLS
+            .iter()
+            .find(|t| t.name == "web_fetch")
+            .expect("web_fetch spec must exist")
+    }
+
+    /// The schema must expose `raw` as a boolean so MCP clients and
+    /// the CLI both see it, and `check_args` must accept it as a valid
+    /// parameter (not reject it as "unknown").
+    #[test]
+    fn raw_param_is_in_schema_and_accepted_by_check_args() {
+        let tool = fetch_spec();
+        let schema = spec::mcp_schema(tool);
+        let props = &schema["inputSchema"]["properties"];
+        assert_eq!(
+            props["raw"]["type"],
+            "boolean",
+            "raw must be a boolean in the MCP schema"
+        );
+        // raw is optional: it must NOT be in the required array.
+        let required = schema["inputSchema"]["required"].as_array().unwrap();
+        assert!(
+            !required.iter().any(|v| v == "raw"),
+            "raw must not be required"
+        );
+        // check_args must accept raw: true, raw: false, and raw: null.
+        assert_eq!(
+            spec::check_args(tool, &json!({"url": "https://example.com", "raw": true})),
+            Ok(()),
+            "raw=true must be accepted"
+        );
+        assert_eq!(
+            spec::check_args(tool, &json!({"url": "https://example.com", "raw": false})),
+            Ok(()),
+            "raw=false must be accepted"
+        );
+        assert_eq!(
+            spec::check_args(tool, &json!({"url": "https://example.com", "raw": null})),
+            Ok(()),
+            "raw=null (absent) must be accepted"
+        );
+        // Non-boolean values must be rejected.
+        assert!(
+            spec::check_args(tool, &json!({"url": "https://example.com", "raw": "yes"})).is_err(),
+            "raw=string must be rejected"
+        );
+        assert!(
+            spec::check_args(tool, &json!({"url": "https://example.com", "raw": 1})).is_err(),
+            "raw=integer must be rejected"
+        );
+    }
+
+    /// The CLI must generate `raw: true` when --raw is present, and
+    /// must produce nothing for raw when --raw is absent (default stays
+    /// with the core).
+    #[test]
+    fn cli_raw_flag_maps_to_raw_true_in_args_json() {
+        let tool = fetch_spec();
+        let matches_with = spec::cli_command(tool)
+            .try_get_matches_from(["fetch", "https://example.com", "--raw"])
+            .expect("--raw must be accepted by the CLI");
+        let args = spec::matches_to_json(tool, &matches_with);
+        assert_eq!(args["raw"], true, "--raw must produce raw: true in the args");
+
+        let matches_without = spec::cli_command(tool)
+            .try_get_matches_from(["fetch", "https://example.com"])
+            .expect("fetch without --raw must be accepted");
+        let args_without = spec::matches_to_json(tool, &matches_without);
+        assert!(
+            args_without.get("raw").is_none(),
+            "omitting --raw must not emit raw in the args (default stays with core)"
+        );
+    }
+
+    // --- Behavioral tests: actual fetch_single_inner execution paths ---
+    //
+    // These tests run against a local TCP server so they are deterministic
+    // and require no live network or challenge dependencies.  They MUST run
+    // under nextest (each test gets its own process), because they call
+    // `unsafe { std::env::set_var(...) }` which is process-wide state.
+    // Running them under plain `cargo test` with multiple threads is unsafe;
+    // the comment below on each test records this dependency.
+
+    /// Minimal HTTP/1.1 server: accepts connections, serves a fixed response
+    /// body, then closes each connection.
+    fn one_shot_server(body: &'static str, content_type: &'static str) -> (String, std::net::TcpListener) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let port = listener.local_addr().unwrap().port();
+        let listener2 = listener.try_clone().expect("clone listener");
+        std::thread::spawn(move || {
+            for stream in listener2.incoming() {
+                let Ok(mut s) = stream else { return };
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    content_type,
+                    body.len(),
+                    body
+                );
+                let _ = s.write_all(resp.as_bytes());
+            }
+        });
+        let url = format!("http://127.0.0.1:{}/page", port);
+        (url, listener)
+    }
+
+    /// Tier-1 raw passthrough: fetch_single_inner must return the decoded HTTP
+    /// body verbatim in content[0].text (not DonSift markdown), and
+    /// structuredContent must carry ok:true, raw:true, tier, status, and url.
+    ///
+    /// Requires nextest: sets process-wide DONSETCH_ALLOW_PRIVATE_EGRESS.
+    #[test]
+    fn raw_tier1_returns_decoded_body_with_correct_structured_output() {
+        // SAFETY: nextest gives each test its own process; no other thread reads
+        // or writes this variable concurrently during this test.
+        unsafe {
+            std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
+            std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
+        }
+        const HTML: &str = "<html><head><title>T</title></head><body><p>Hello raw world</p></body></html>";
+        let (url, _listener) = one_shot_server(HTML, "text/html; charset=utf-8");
+
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let daemon = std::sync::Arc::new(
+                            super::Daemon::new().await.expect("daemon init"),
+                        );
+                        let args = serde_json::json!({
+                            "url": url,
+                            "raw": true,
+                            "tier": "1",
+                        });
+                        let u = args["url"].as_str().unwrap().to_string();
+                        let result = super::fetch_single(&daemon, &args, &u).await;
+
+                        // The raw body must appear verbatim in content[0].text.
+                        let text = result["content"][0]["text"]
+                            .as_str()
+                            .expect("content[0].text must be a string");
+                        assert_eq!(
+                            text, HTML,
+                            "tier-1 raw must return the decoded HTTP body exactly"
+                        );
+
+                        // structuredContent must carry ok:true and raw:true.
+                        let sc = &result["structuredContent"];
+                        assert_eq!(sc["ok"], true, "structuredContent.ok must be true");
+                        assert_eq!(sc["raw"], true, "structuredContent.raw must be true");
+
+                        // tier must be "1"; status must be 200.
+                        let tier = sc["tier"].as_str().expect("structuredContent.tier");
+                        assert!(
+                            tier.starts_with('1'),
+                            "structuredContent.tier must start with '1', got {tier:?}"
+                        );
+                        assert_eq!(sc["status"], 200, "structuredContent.status must be 200");
+
+                        // url must be a non-empty string.
+                        assert!(
+                            sc["url"].as_str().map(|u| !u.is_empty()).unwrap_or(false),
+                            "structuredContent.url must be a non-empty string"
+                        );
+
+                        // DonSift markdown MUST NOT appear: the raw body is HTML,
+                        // not extracted prose. A DonSift result would start with
+                        // '#' (heading extracted from <h1>/<title>).
+                        assert!(
+                            !text.starts_with('#'),
+                            "raw result must not be DonSift markdown (starts with #)"
+                        );
+                    });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// Default (raw absent) regression: fetch_single_inner must continue to
+    /// return DonSift-extracted markdown when raw is not set, proving the raw
+    /// flag addition did not alter the default extraction path.
+    ///
+    /// Requires nextest: sets process-wide DONSETCH_ALLOW_PRIVATE_EGRESS.
+    #[test]
+    fn raw_absent_regression_extraction_path_unchanged() {
+        unsafe {
+            std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
+            std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
+        }
+        // A page with enough prose that DonSift produces non-empty markdown.
+        const HTML: &str = concat!(
+            "<html><head><title>Article</title></head><body>",
+            "<h1>Test Heading</h1>",
+            "<p>This is a paragraph with enough words to pass the thin-extraction threshold.",
+            " DonSeTch extracts prose content from HTML pages for AI agents.</p>",
+            "<p>Another paragraph of content to make the extraction non-trivial.",
+            " The goal is to verify the normal extraction path still works.</p>",
+            "</body></html>"
+        );
+        let (url, _listener) = one_shot_server(HTML, "text/html; charset=utf-8");
+
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let daemon = std::sync::Arc::new(
+                            super::Daemon::new().await.expect("daemon init"),
+                        );
+                        let args = serde_json::json!({
+                            "url": url,
+                            "tier": "1",
+                            // raw is intentionally absent
+                        });
+                        let u = args["url"].as_str().unwrap().to_string();
+                        let result = super::fetch_single(&daemon, &args, &u).await;
+
+                        // Without raw=true the call must succeed via extraction.
+                        let sc = &result["structuredContent"];
+                        assert_eq!(
+                            sc["ok"], true,
+                            "default (no raw) fetch must succeed; got: {result}"
+                        );
+
+                        // structuredContent must NOT carry raw:true.
+                        assert_ne!(
+                            sc["raw"], true,
+                            "structuredContent.raw must not be true on the default path"
+                        );
+
+                        // content[0].text must be extracted prose, not raw HTML.
+                        let text = result["content"][0]["text"]
+                            .as_str()
+                            .expect("content[0].text must be a string");
+                        assert!(
+                            !text.contains("<html>") && !text.contains("<body>"),
+                            "default extraction must not return raw HTML tags; got: {text:.200}"
+                        );
+                    });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// Tier-2 raw passthrough: with raw=true and tier=2 the call must route
+    /// through ghost_escalate and return the injected DOM exactly in
+    /// content[0].text, with structuredContent.raw==true.
+    ///
+    /// Uses the DONSETCH_GHOST_MOCK_HTML env-var seam added to ghost_escalate
+    /// (#[cfg(test)] only) to inject a known fixed HTML string as if the
+    /// browser had navigated and solved a challenge.  This replaces the old
+    /// inverted assertion that relied on browser *failure* in CI — that
+    /// approach validated absence of capability, not the capability itself,
+    /// and would have failed in an environment where Chromium actually works.
+    ///
+    /// Asserts:
+    ///  - content[0].text is EXACTLY the injected HTML (not markdown, not truncated)
+    ///  - structuredContent.raw == true
+    ///  - structuredContent.tier contains "ghost" (from the mock seam's "ghost-mock" label)
+    ///  - structuredContent.status == 200
+    ///  - structuredContent.url is non-empty
+    ///
+    /// Requires nextest: sets process-wide env vars.
+    #[test]
+    fn raw_tier2_returns_injected_dom_as_raw_passthrough() {
+        // SAFETY: nextest gives each test its own process; no other thread reads
+        // or writes these variables concurrently during this test.
+        unsafe {
+            std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
+            std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
+            // The mock seam in ghost_escalate (#[cfg(test)]) reads this and
+            // returns it immediately without launching Chromium.
+            std::env::set_var(
+                "DONSETCH_GHOST_MOCK_HTML",
+                "<html><body><p>Ghost mock DOM content injected by test</p></body></html>",
+            );
+        }
+        const MOCK_HTML: &str =
+            "<html><body><p>Ghost mock DOM content injected by test</p></body></html>";
+
+        // The URL can be any reachable local address; tier=2 skips tier-1 HTTP
+        // entirely (SkipToSolve) and goes straight to ghost_escalate, which the
+        // mock seam short-circuits before any browser launch.
+        let (url, _listener) = one_shot_server(
+            "<html><body>not used by tier=2</body></html>",
+            "text/html; charset=utf-8",
+        );
+
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let daemon = std::sync::Arc::new(
+                            super::Daemon::new().await.expect("daemon init"),
+                        );
+                        let args = serde_json::json!({
+                            "url": url,
+                            "raw": true,
+                            "tier": "2",
+                        });
+                        let u = args["url"].as_str().unwrap().to_string();
+                        let result = super::fetch_single(&daemon, &args, &u).await;
+
+                        let sc = &result["structuredContent"];
+
+                        // The injected HTML must appear verbatim in content[0].text —
+                        // no markdown extraction, no truncation, no transformation.
+                        let text = result["content"][0]["text"]
+                            .as_str()
+                            .expect("content[0].text must be a string");
+                        assert_eq!(
+                            text, MOCK_HTML,
+                            "tier-2 raw must return the injected DOM exactly; \
+                             got: {text:.200}"
+                        );
+
+                        // structuredContent.raw must be true.
+                        assert_eq!(
+                            sc["raw"], true,
+                            "structuredContent.raw must be true for tier-2 raw passthrough"
+                        );
+
+                        // tier must indicate ghost/tier-2 (the mock seam returns
+                        // "ghost-mock" as the tier label).
+                        let tier = sc["tier"].as_str().expect("structuredContent.tier");
+                        assert!(
+                            tier.contains("ghost") || tier.starts_with('2'),
+                            "structuredContent.tier must indicate ghost/tier-2, got {tier:?}"
+                        );
+
+                        // status must be 200 (the mock returns 200).
+                        assert_eq!(
+                            sc["status"], 200,
+                            "structuredContent.status must be 200"
+                        );
+
+                        // url must be non-empty.
+                        assert!(
+                            sc["url"].as_str().map(|u| !u.is_empty()).unwrap_or(false),
+                            "structuredContent.url must be a non-empty string"
+                        );
+                    });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
 

@@ -105,6 +105,10 @@
             "description": "Continue from a previous next_offset. Reuse the same URL and any focus, section, selector or rendering fields from that fetch.",
             "type": "integer"
           },
+          "raw": {
+            "description": "Return raw HTML instead of extracted markdown. Tier-1: decoded HTTP response body. Tier-2 (after challenge solve): fully-rendered DOM HTML. Default false; omit for standard markdown output.",
+            "type": "boolean"
+          },
           "section": {
             "description": "Heading name (substring, case-insensitive) or an sN id from a toc outline: return only that section. Use after toc.",
             "type": "string"
