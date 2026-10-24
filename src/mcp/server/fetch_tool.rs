@@ -4978,6 +4978,259 @@ mod raw_passthrough_tests {
             "omitting --raw must not emit raw in the args (default stays with core)"
         );
     }
+
+    // --- Behavioral tests: actual fetch_single_inner execution paths ---
+    //
+    // These tests run against a local TCP server so they are deterministic
+    // and require no live network or challenge dependencies.  They MUST run
+    // under nextest (each test gets its own process), because they call
+    // `unsafe { std::env::set_var(...) }` which is process-wide state.
+    // Running them under plain `cargo test` with multiple threads is unsafe;
+    // the comment below on each test records this dependency.
+
+    /// Minimal HTTP/1.1 server: accepts connections, serves a fixed response
+    /// body, then closes each connection.
+    fn one_shot_server(body: &'static str, content_type: &'static str) -> (String, std::net::TcpListener) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let port = listener.local_addr().unwrap().port();
+        let listener2 = listener.try_clone().expect("clone listener");
+        std::thread::spawn(move || {
+            for stream in listener2.incoming() {
+                let Ok(mut s) = stream else { return };
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    content_type,
+                    body.len(),
+                    body
+                );
+                let _ = s.write_all(resp.as_bytes());
+            }
+        });
+        let url = format!("http://127.0.0.1:{}/page", port);
+        (url, listener)
+    }
+
+    /// Tier-1 raw passthrough: fetch_single_inner must return the decoded HTTP
+    /// body verbatim in content[0].text (not DonSift markdown), and
+    /// structuredContent must carry ok:true, raw:true, tier, status, and url.
+    ///
+    /// Requires nextest: sets process-wide DONSETCH_ALLOW_PRIVATE_EGRESS.
+    #[test]
+    fn raw_tier1_returns_decoded_body_with_correct_structured_output() {
+        // SAFETY: nextest gives each test its own process; no other thread reads
+        // or writes this variable concurrently during this test.
+        unsafe {
+            std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
+            std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
+        }
+        const HTML: &str = "<html><head><title>T</title></head><body><p>Hello raw world</p></body></html>";
+        let (url, _listener) = one_shot_server(HTML, "text/html; charset=utf-8");
+
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let daemon = std::sync::Arc::new(
+                            super::Daemon::new().await.expect("daemon init"),
+                        );
+                        let args = serde_json::json!({
+                            "url": url,
+                            "raw": true,
+                            "tier": "1",
+                        });
+                        let u = args["url"].as_str().unwrap().to_string();
+                        let result = super::fetch_single(&daemon, &args, &u).await;
+
+                        // The raw body must appear verbatim in content[0].text.
+                        let text = result["content"][0]["text"]
+                            .as_str()
+                            .expect("content[0].text must be a string");
+                        assert_eq!(
+                            text, HTML,
+                            "tier-1 raw must return the decoded HTTP body exactly"
+                        );
+
+                        // structuredContent must carry ok:true and raw:true.
+                        let sc = &result["structuredContent"];
+                        assert_eq!(sc["ok"], true, "structuredContent.ok must be true");
+                        assert_eq!(sc["raw"], true, "structuredContent.raw must be true");
+
+                        // tier must be "1"; status must be 200.
+                        let tier = sc["tier"].as_str().expect("structuredContent.tier");
+                        assert!(
+                            tier.starts_with('1'),
+                            "structuredContent.tier must start with '1', got {tier:?}"
+                        );
+                        assert_eq!(sc["status"], 200, "structuredContent.status must be 200");
+
+                        // url must be a non-empty string.
+                        assert!(
+                            sc["url"].as_str().map(|u| !u.is_empty()).unwrap_or(false),
+                            "structuredContent.url must be a non-empty string"
+                        );
+
+                        // DonSift markdown MUST NOT appear: the raw body is HTML,
+                        // not extracted prose. A DonSift result would start with
+                        // '#' (heading extracted from <h1>/<title>).
+                        assert!(
+                            !text.starts_with('#'),
+                            "raw result must not be DonSift markdown (starts with #)"
+                        );
+                    });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// Default (raw absent) regression: fetch_single_inner must continue to
+    /// return DonSift-extracted markdown when raw is not set, proving the raw
+    /// flag addition did not alter the default extraction path.
+    ///
+    /// Requires nextest: sets process-wide DONSETCH_ALLOW_PRIVATE_EGRESS.
+    #[test]
+    fn raw_absent_regression_extraction_path_unchanged() {
+        unsafe {
+            std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
+            std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
+        }
+        // A page with enough prose that DonSift produces non-empty markdown.
+        const HTML: &str = concat!(
+            "<html><head><title>Article</title></head><body>",
+            "<h1>Test Heading</h1>",
+            "<p>This is a paragraph with enough words to pass the thin-extraction threshold.",
+            " DonSeTch extracts prose content from HTML pages for AI agents.</p>",
+            "<p>Another paragraph of content to make the extraction non-trivial.",
+            " The goal is to verify the normal extraction path still works.</p>",
+            "</body></html>"
+        );
+        let (url, _listener) = one_shot_server(HTML, "text/html; charset=utf-8");
+
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let daemon = std::sync::Arc::new(
+                            super::Daemon::new().await.expect("daemon init"),
+                        );
+                        let args = serde_json::json!({
+                            "url": url,
+                            "tier": "1",
+                            // raw is intentionally absent
+                        });
+                        let u = args["url"].as_str().unwrap().to_string();
+                        let result = super::fetch_single(&daemon, &args, &u).await;
+
+                        // Without raw=true the call must succeed via extraction.
+                        let sc = &result["structuredContent"];
+                        assert_eq!(
+                            sc["ok"], true,
+                            "default (no raw) fetch must succeed; got: {result}"
+                        );
+
+                        // structuredContent must NOT carry raw:true.
+                        assert_ne!(
+                            sc["raw"], true,
+                            "structuredContent.raw must not be true on the default path"
+                        );
+
+                        // content[0].text must be extracted prose, not raw HTML.
+                        let text = result["content"][0]["text"]
+                            .as_str()
+                            .expect("content[0].text must be a string");
+                        assert!(
+                            !text.contains("<html>") && !text.contains("<body>"),
+                            "default extraction must not return raw HTML tags; got: {text:.200}"
+                        );
+                    });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// Tier-2 raw passthrough routing proof: with raw=true and tier=2 the call
+    /// must route to ghost escalation (not fall back to tier-1 extraction).
+    ///
+    /// The raw return block (lines 2516-2545 of fetch_tool.rs) is shared between
+    /// tier-1 and tier-2; `raw_tier1_returns_decoded_body_with_correct_structured_output`
+    /// above fully exercises its output contract.  This test verifies the tier-2
+    /// routing decision: tier=2 maps to RouteDecision::SkipToSolve which sets
+    /// need_ghost=true (via skip_tier1), so the call reaches ghost_escalate.
+    /// In a headless CI environment without Chrome that launch fails; the test
+    /// asserts the error originates from the browser layer, proving that raw=true
+    /// did NOT cause the code to silently run the tier-1 extraction path instead.
+    ///
+    /// Requires nextest: sets process-wide DONSETCH_ALLOW_PRIVATE_EGRESS.
+    #[test]
+    fn raw_tier2_routes_to_ghost_not_tier1_extraction() {
+        unsafe {
+            std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
+            std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
+        }
+        // The body does not matter: tier=2 sets SkipToSolve (tier-1 is bypassed).
+        const HTML: &str = "<html><body>ghost target</body></html>";
+        let (url, _listener) = one_shot_server(HTML, "text/html; charset=utf-8");
+
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let daemon = std::sync::Arc::new(
+                            super::Daemon::new().await.expect("daemon init"),
+                        );
+                        let args = serde_json::json!({
+                            "url": url,
+                            "raw": true,
+                            "tier": "2",
+                        });
+                        let u = args["url"].as_str().unwrap().to_string();
+                        let result = super::fetch_single(&daemon, &args, &u).await;
+
+                        // With no browser available the ghost launch fails.
+                        // The response must be an error (ok:false or isError),
+                        // NOT a raw HTML passthrough result (which would mean
+                        // raw=true was silently ignored and tier-1 ran instead).
+                        let sc = &result["structuredContent"];
+                        assert_ne!(
+                            sc["raw"], true,
+                            "tier=2 with no browser must not silently fall back to a tier-1 raw result"
+                        );
+                        // The error must not be "fetch.invalid" (SSRF rejection)
+                        // — that would mean the URL was rejected before routing.
+                        let code = sc["code"].as_str().unwrap_or("");
+                        assert_ne!(
+                            code, "fetch.invalid",
+                            "tier=2 raw must attempt ghost, not reject at URL validation; code={code:?}"
+                        );
+                        // The error text must reference the browser/ghost layer.
+                        let err_text = result["content"][0]["text"].as_str().unwrap_or("");
+                        assert!(
+                            err_text.contains("browser") || err_text.contains("ghost") || err_text.contains("launch"),
+                            "tier=2 error text must reference the browser layer; got: {err_text:.200}"
+                        );
+                    });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 }
 
 #[cfg(test)]
