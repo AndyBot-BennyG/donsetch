@@ -2872,6 +2872,38 @@ pub(super) async fn ghost_escalate(
     accept_language: Option<&str>,
     session_stamp: &str,
 ) -> Result<(extract::Extracted, &'static str, u16, String, String), GhostFailure> {
+    // Test-only seam: when DONSETCH_GHOST_MOCK_HTML is set, skip all browser
+    // machinery and return the env-var value as if the browser had rendered it.
+    // This enables deterministic unit tests for the tier-2 raw passthrough path
+    // without launching Chromium.  Production builds never set this variable;
+    // the guard is #[cfg(test)] so it is compiled out entirely in release mode.
+    #[cfg(test)]
+    if let Ok(mock_html) = std::env::var("DONSETCH_GHOST_MOCK_HTML") {
+        let e = extract::Extracted {
+            markdown: mock_html.clone(),
+            title: None,
+            byline: None,
+            published: None,
+            site: None,
+            total_chars: mock_html.len(),
+            next_offset: None,
+            blocks_total: 0,
+            blocks_shown: 0,
+            focus_omitted: false,
+            tokens_est: mock_html.len() / 4,
+            thin: false,
+            content_kind: extract::ContentKind::Page,
+            lang: "en".into(),
+            quality: 1.0,
+            pdf_pages: None,
+            images: vec![],
+            fingerprint: None,
+            via: None,
+            partial: None,
+        };
+        return Ok((e, "ghost-mock", 200, url.to_string(), mock_html));
+    }
+
     let render_state = GhostState::load();
     let t0 = std::time::Instant::now();
     // v4 E2: ghost agrees with the persona pin (viewport + locale).
@@ -5161,28 +5193,49 @@ mod raw_passthrough_tests {
             .unwrap();
     }
 
-    /// Tier-2 raw passthrough routing proof: with raw=true and tier=2 the call
-    /// must route to ghost escalation (not fall back to tier-1 extraction).
+    /// Tier-2 raw passthrough: with raw=true and tier=2 the call must route
+    /// through ghost_escalate and return the injected DOM exactly in
+    /// content[0].text, with structuredContent.raw==true.
     ///
-    /// The raw return block (lines 2516-2545 of fetch_tool.rs) is shared between
-    /// tier-1 and tier-2; `raw_tier1_returns_decoded_body_with_correct_structured_output`
-    /// above fully exercises its output contract.  This test verifies the tier-2
-    /// routing decision: tier=2 maps to RouteDecision::SkipToSolve which sets
-    /// need_ghost=true (via skip_tier1), so the call reaches ghost_escalate.
-    /// In a headless CI environment without Chrome that launch fails; the test
-    /// asserts the error originates from the browser layer, proving that raw=true
-    /// did NOT cause the code to silently run the tier-1 extraction path instead.
+    /// Uses the DONSETCH_GHOST_MOCK_HTML env-var seam added to ghost_escalate
+    /// (#[cfg(test)] only) to inject a known fixed HTML string as if the
+    /// browser had navigated and solved a challenge.  This replaces the old
+    /// inverted assertion that relied on browser *failure* in CI — that
+    /// approach validated absence of capability, not the capability itself,
+    /// and would have failed in an environment where Chromium actually works.
     ///
-    /// Requires nextest: sets process-wide DONSETCH_ALLOW_PRIVATE_EGRESS.
+    /// Asserts:
+    ///  - content[0].text is EXACTLY the injected HTML (not markdown, not truncated)
+    ///  - structuredContent.raw == true
+    ///  - structuredContent.tier contains "ghost" (from the mock seam's "ghost-mock" label)
+    ///  - structuredContent.status == 200
+    ///  - structuredContent.url is non-empty
+    ///
+    /// Requires nextest: sets process-wide env vars.
     #[test]
-    fn raw_tier2_routes_to_ghost_not_tier1_extraction() {
+    fn raw_tier2_returns_injected_dom_as_raw_passthrough() {
+        // SAFETY: nextest gives each test its own process; no other thread reads
+        // or writes these variables concurrently during this test.
         unsafe {
             std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
             std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
+            // The mock seam in ghost_escalate (#[cfg(test)]) reads this and
+            // returns it immediately without launching Chromium.
+            std::env::set_var(
+                "DONSETCH_GHOST_MOCK_HTML",
+                "<html><body><p>Ghost mock DOM content injected by test</p></body></html>",
+            );
         }
-        // The body does not matter: tier=2 sets SkipToSolve (tier-1 is bypassed).
-        const HTML: &str = "<html><body>ghost target</body></html>";
-        let (url, _listener) = one_shot_server(HTML, "text/html; charset=utf-8");
+        const MOCK_HTML: &str =
+            "<html><body><p>Ghost mock DOM content injected by test</p></body></html>";
+
+        // The URL can be any reachable local address; tier=2 skips tier-1 HTTP
+        // entirely (SkipToSolve) and goes straight to ghost_escalate, which the
+        // mock seam short-circuits before any browser launch.
+        let (url, _listener) = one_shot_server(
+            "<html><body>not used by tier=2</body></html>",
+            "text/html; charset=utf-8",
+        );
 
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)
@@ -5203,27 +5256,43 @@ mod raw_passthrough_tests {
                         let u = args["url"].as_str().unwrap().to_string();
                         let result = super::fetch_single(&daemon, &args, &u).await;
 
-                        // With no browser available the ghost launch fails.
-                        // The response must be an error (ok:false or isError),
-                        // NOT a raw HTML passthrough result (which would mean
-                        // raw=true was silently ignored and tier-1 ran instead).
                         let sc = &result["structuredContent"];
-                        assert_ne!(
+
+                        // The injected HTML must appear verbatim in content[0].text —
+                        // no markdown extraction, no truncation, no transformation.
+                        let text = result["content"][0]["text"]
+                            .as_str()
+                            .expect("content[0].text must be a string");
+                        assert_eq!(
+                            text, MOCK_HTML,
+                            "tier-2 raw must return the injected DOM exactly; \
+                             got: {text:.200}"
+                        );
+
+                        // structuredContent.raw must be true.
+                        assert_eq!(
                             sc["raw"], true,
-                            "tier=2 with no browser must not silently fall back to a tier-1 raw result"
+                            "structuredContent.raw must be true for tier-2 raw passthrough"
                         );
-                        // The error must not be "fetch.invalid" (SSRF rejection)
-                        // — that would mean the URL was rejected before routing.
-                        let code = sc["code"].as_str().unwrap_or("");
-                        assert_ne!(
-                            code, "fetch.invalid",
-                            "tier=2 raw must attempt ghost, not reject at URL validation; code={code:?}"
-                        );
-                        // The error text must reference the browser/ghost layer.
-                        let err_text = result["content"][0]["text"].as_str().unwrap_or("");
+
+                        // tier must indicate ghost/tier-2 (the mock seam returns
+                        // "ghost-mock" as the tier label).
+                        let tier = sc["tier"].as_str().expect("structuredContent.tier");
                         assert!(
-                            err_text.contains("browser") || err_text.contains("ghost") || err_text.contains("launch"),
-                            "tier=2 error text must reference the browser layer; got: {err_text:.200}"
+                            tier.contains("ghost") || tier.starts_with('2'),
+                            "structuredContent.tier must indicate ghost/tier-2, got {tier:?}"
+                        );
+
+                        // status must be 200 (the mock returns 200).
+                        assert_eq!(
+                            sc["status"], 200,
+                            "structuredContent.status must be 200"
+                        );
+
+                        // url must be non-empty.
+                        assert!(
+                            sc["url"].as_str().map(|u| !u.is_empty()).unwrap_or(false),
+                            "structuredContent.url must be a non-empty string"
                         );
                     });
             })
