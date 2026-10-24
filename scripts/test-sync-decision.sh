@@ -31,25 +31,42 @@ MOCK_BASE="${HOME}/.sync-test-$$"
 trap 'rm -rf "$MOCK_BASE"' EXIT
 
 # ---------------------------------------------------------------------------
-# run_decision UPSTREAM CURRENT COMPARE_STATUS [DRY_RUN=false]
+# run_decision UPSTREAM CURRENT COMPARE_STATUS [DRY_RUN=false] [GH_EXIT_CODE=0]
 #
-# Runs the decision block in isolation with a mock gh that returns
-# COMPARE_STATUS for any "compare" API call.
+# Runs the decision block in isolation with a mock gh.
+#
+# GH_EXIT_CODE=0 (default): mock gh prints COMPARE_STATUS and exits 0.
+#   This covers normal API responses (ahead/behind/diverged/identical).
+#
+# GH_EXIT_CODE!=0: mock gh exits with the given non-zero code and produces no
+#   stdout, emulating a real gh api failure (network error, auth error, 404).
+#   This exercises the actual workflow fallback:
+#     COMPARE_STATUS=$(gh api ... 2>/dev/null || echo "error")
+#   so that the "error" value comes from the || fallback, not from gh itself.
 # ---------------------------------------------------------------------------
 run_decision() {
   local upstream="$1"
   local current="$2"
   local compare_status="$3"
   local dry_run="${4:-false}"
+  local gh_exit_code="${5:-0}"
 
-  local run_dir="${MOCK_BASE}/${upstream//\//_}-${current//\//_}-${compare_status}"
+  # Include the exit-code variant in the directory name to avoid collisions
+  # when the same upstream/current/status combo is tested with and without failure.
+  local run_dir="${MOCK_BASE}/${upstream//\//_}-${current//\//_}-${compare_status}-exit${gh_exit_code}"
   mkdir -p "$run_dir"
   local out_file="${run_dir}/github_output"
   touch "$out_file"
 
-  # Write a mock gh script with the compare_status value baked in.
+  # Write a mock gh script.
   local mock_gh="${run_dir}/gh"
-  printf '#!/usr/bin/env bash\necho "%s"\nexit 0\n' "$compare_status" > "$mock_gh"
+  if [ "$gh_exit_code" -ne 0 ]; then
+    # Nonzero exit, no stdout: triggers the || echo "error" fallback in the workflow.
+    printf '#!/usr/bin/env bash\nexit %s\n' "$gh_exit_code" > "$mock_gh"
+  else
+    # Zero exit, prints the baked-in status string: covers normal API responses.
+    printf '#!/usr/bin/env bash\necho "%s"\nexit 0\n' "$compare_status" > "$mock_gh"
+  fi
   chmod 755 "$mock_gh"
 
   # Run the decision logic (verbatim copy of the workflow step's run: block).
@@ -173,10 +190,15 @@ assert_contains     "needed=false for identical commits"  "$out" "needed=false"
 assert_not_contains "no branch for identical commits"     "$out" "branch=sync"
 echo ""
 
-echo "-- 6. API error (gh failure falls back to 'error') --"
-out=$(run_decision "v4.11.0" "v4.10.2" "error")
-assert_contains     "needed=false on API error"  "$out" "needed=false"
-assert_not_contains "no branch on API error"     "$out" "branch=sync"
+echo "-- 6. API error: gh exits nonzero, || fallback produces 'error' --"
+# GH_EXIT_CODE=1: the mock gh exits 1 with no stdout.
+# The workflow fallback COMPARE_STATUS=$(gh api ... || echo "error") fires;
+# the decision must be fail-closed (needed=false) with no branch or ref-write.
+out=$(run_decision "v4.11.0" "v4.10.2" "error" "false" "1")
+assert_contains     "needed=false on gh API failure"        "$out" "needed=false"
+assert_contains     "compare_status=error recorded"         "$out" "compare_status=error"
+assert_not_contains "no branch emitted on gh API failure"   "$out" "branch=sync"
+assert_not_contains "no dry_run emitted on gh API failure"  "$out" "dry_run="
 echo ""
 
 echo "-- 7. Dry-run flag propagated on forward sync --"
