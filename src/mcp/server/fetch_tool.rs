@@ -1985,6 +1985,10 @@ async fn fetch_single_inner(
     }
 
     // === Tier-1 extraction (when we have a body) ===
+    let want_raw = args.get("raw").and_then(Value::as_bool).unwrap_or(false);
+    // Accumulates raw HTML when `want_raw=true`: tier-1 sets it from the
+    // decoded response body; tier-2 sets it from the post-solve DOM string.
+    let mut raw_html: Option<String> = None;
     let mut ghost_html = None;
     let mut final_ex: Option<extract::Extracted> = None;
     let mut final_tier: &str = tier_used;
@@ -2021,6 +2025,14 @@ async fn fetch_single_inner(
                 })),
             );
         }
+        // raw passthrough: skip DonSift extraction and capture the decoded
+        // response body.  The normal extraction path is skipped entirely when
+        // raw=true so none of the thin/challenge/ghost-escalation logic below
+        // can promote a clean tier-1 response to a ghost fetch.
+        if want_raw {
+            raw_html = Some(crate::extract::charset::decode(&o.body, &ct));
+            final_url = o.url.clone();
+        } else {
         match extract::extract_off_worker(&o.body, &ct, &o.url, &opts).await {
             Ok(e) => {
                 final_url = o.url.clone();
@@ -2075,6 +2087,7 @@ async fn fetch_single_inner(
                 );
             }
         }
+        } // else (want_raw) block
     }
 
     let ex_thin = final_ex.as_ref().map(|e| e.thin).unwrap_or(false);
@@ -2269,9 +2282,15 @@ async fn fetch_single_inner(
         match ghost_result {
             Ok((e, tier2, status, furl, html)) => {
                 if stitch {
-                    ghost_html = Some((html, furl.clone()));
+                    ghost_html = Some((html.clone(), furl.clone()));
                 }
-                final_ex = Some(e);
+                // raw passthrough: capture the browser's fully-rendered DOM
+                // so the caller receives post-challenge HTML, not markdown.
+                if want_raw {
+                    raw_html = Some(html);
+                } else {
+                    final_ex = Some(e);
+                }
                 final_tier = tier2;
                 final_status = status;
                 final_url = furl;
@@ -2494,6 +2513,35 @@ async fn fetch_single_inner(
     }
 
     let Some(ex) = final_ex else {
+        // raw passthrough: when raw=true and a tier (1 or 2) produced HTML,
+        // raw_html is set and final_ex is None.  Return the HTML directly,
+        // bypassing DonSift extraction, link-handle binding, and all
+        // post-extraction logic (none of which applies to a raw response).
+        if let Some(html) = raw_html {
+            let display_url = if adapter_used.is_some() {
+                orig_url.clone()
+            } else {
+                final_url.clone()
+            };
+            return json!({
+                "content": [{"type": "text", "text": html}],
+                "structuredContent": {
+                    "ok": true,
+                    "raw": true,
+                    "url": display_url,
+                    "tier": final_tier,
+                    "status": final_status,
+                },
+                "_meta": {
+                    "com.donsetch/fetch-debug": {
+                        "tier": final_tier,
+                        "status": (final_status != 0).then_some(final_status),
+                        "elapsed_ms": t0.elapsed().as_millis(),
+                        "raw": true,
+                    }
+                },
+            });
+        }
         return tool_error_structured(
             "all fetch tiers exhausted : no response received",
             "permanent",
@@ -4847,6 +4895,87 @@ across every major social platform today.";
         assert!(
             !super::looks_like_shell_text(hn),
             "short legit listings must not classify as a shell"
+        );
+    }
+}
+
+#[cfg(test)]
+mod raw_passthrough_tests {
+    use crate::spec;
+    use serde_json::json;
+
+    fn fetch_spec() -> &'static spec::ToolSpec {
+        spec::TOOLS
+            .iter()
+            .find(|t| t.name == "web_fetch")
+            .expect("web_fetch spec must exist")
+    }
+
+    /// The schema must expose `raw` as a boolean so MCP clients and
+    /// the CLI both see it, and `check_args` must accept it as a valid
+    /// parameter (not reject it as "unknown").
+    #[test]
+    fn raw_param_is_in_schema_and_accepted_by_check_args() {
+        let tool = fetch_spec();
+        let schema = spec::mcp_schema(tool);
+        let props = &schema["inputSchema"]["properties"];
+        assert_eq!(
+            props["raw"]["type"],
+            "boolean",
+            "raw must be a boolean in the MCP schema"
+        );
+        // raw is optional: it must NOT be in the required array.
+        let required = schema["inputSchema"]["required"].as_array().unwrap();
+        assert!(
+            !required.iter().any(|v| v == "raw"),
+            "raw must not be required"
+        );
+        // check_args must accept raw: true, raw: false, and raw: null.
+        assert_eq!(
+            spec::check_args(tool, &json!({"url": "https://example.com", "raw": true})),
+            Ok(()),
+            "raw=true must be accepted"
+        );
+        assert_eq!(
+            spec::check_args(tool, &json!({"url": "https://example.com", "raw": false})),
+            Ok(()),
+            "raw=false must be accepted"
+        );
+        assert_eq!(
+            spec::check_args(tool, &json!({"url": "https://example.com", "raw": null})),
+            Ok(()),
+            "raw=null (absent) must be accepted"
+        );
+        // Non-boolean values must be rejected.
+        assert!(
+            spec::check_args(tool, &json!({"url": "https://example.com", "raw": "yes"})).is_err(),
+            "raw=string must be rejected"
+        );
+        assert!(
+            spec::check_args(tool, &json!({"url": "https://example.com", "raw": 1})).is_err(),
+            "raw=integer must be rejected"
+        );
+    }
+
+    /// The CLI must generate `raw: true` when --raw is present, and
+    /// must produce nothing for raw when --raw is absent (default stays
+    /// with the core).
+    #[test]
+    fn cli_raw_flag_maps_to_raw_true_in_args_json() {
+        let tool = fetch_spec();
+        let matches_with = spec::cli_command(tool)
+            .try_get_matches_from(["fetch", "https://example.com", "--raw"])
+            .expect("--raw must be accepted by the CLI");
+        let args = spec::matches_to_json(tool, &matches_with);
+        assert_eq!(args["raw"], true, "--raw must produce raw: true in the args");
+
+        let matches_without = spec::cli_command(tool)
+            .try_get_matches_from(["fetch", "https://example.com"])
+            .expect("fetch without --raw must be accepted");
+        let args_without = spec::matches_to_json(tool, &matches_without);
+        assert!(
+            args_without.get("raw").is_none(),
+            "omitting --raw must not emit raw in the args (default stays with core)"
         );
     }
 }
