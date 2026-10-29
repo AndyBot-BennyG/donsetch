@@ -288,9 +288,9 @@ const FETCH_PARAMS: &[ParamSpec] = &[
         kind: ParamKind::Str,
         cli: CliKind::Flag,
         required: false,
-        help: "Named proxy lane for this fetch (e.g. \"residential\"). Lanes are configured as DONSETCH_PROXY_LANE_<NAME> env vars on the service. Case-insensitive name, allowed chars [a-z0-9_]. Credentials never pass through the MCP call. Use with tier=1 for HTTP-only proxied requests (e.g. Bright Data residential port 44445).",
+        help: "Named proxy lane for this fetch (e.g. \"residential\"). Lanes are configured as DONSETCH_PROXY_LANE_<NAME> env vars on the service. Case-insensitive name, allowed chars [a-z0-9_]. Credentials never pass through the MCP call. Requires tier=1 — rejected with proxy.tier_required if tier is not exactly \"1\" (e.g. Bright Data residential port 44445).",
         mcp_help: Some(
-            "Named proxy lane for this request (e.g. \"residential\"). Lanes are service-side env vars (DONSETCH_PROXY_LANE_<NAME>); credentials stay on the server. Unknown lane: tool error listing configured lane names only. Misconfigured lane: error without echoing the value. Use with tier=1.",
+            "Named proxy lane for this request (e.g. \"residential\"). Lanes are service-side env vars (DONSETCH_PROXY_LANE_<NAME>); credentials stay on the server. Requires tier=\"1\" (enforced; auto or tier=2 returns proxy.tier_required). Unknown lane: error listing lane names only. Misconfigured lane: error without echoing the value.",
         ),
     },
     ParamSpec {

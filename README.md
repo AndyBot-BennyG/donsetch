@@ -775,7 +775,7 @@ Rules:
 - **Absent `proxy`**: behavior unchanged — route follows the normal pool/direct path.
 - **Unknown lane**: tool error naming the lane and listing configured lane names. Never falls back silently.
 - **Misconfigured lane**: tool error without echoing the value.
-- **Use `tier=1`** with a proxy lane. `tier=auto` may escalate to a browser which cannot ride a named lane.
+- **`tier=1` is required** with a proxy lane. The tool rejects `proxy` unless `tier` is exactly `"1"` — `tier=auto` or `tier=2` would escalate to a browser that cannot ride a named lane, and the request would fail with a `proxy.tier_required` error. Always pass `"tier": "1"` alongside `"proxy"` in your call.
 - Credentials stay on the server; they never appear in MCP calls, errors, traces, or receipts.
 
 **Bright Data residential (port 44445) and TLS:**

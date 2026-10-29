@@ -162,7 +162,12 @@ RUN if [ "$INSTALL_CHROME" = "true" ]; then \
 #   DONSETCH_PROXY_LANE_RESIDENTIAL=http://<user>-session-{session}:<pass>@brd.superproxy.io:44445
 ARG EXTRA_CA_CERTS=false
 COPY certs/ /tmp/extra-certs/
-RUN if [ "$EXTRA_CA_CERTS" = "true" ] && ls /tmp/extra-certs/*.crt >/dev/null 2>&1; then \
+RUN if [ "$EXTRA_CA_CERTS" = "true" ]; then \
+        ls /tmp/extra-certs/*.crt >/dev/null 2>&1 || { \
+            echo "[donsetch] ERROR: EXTRA_CA_CERTS=true but no *.crt files found in certs/"; \
+            echo "           Add the Bright Data root CA (brightdata_root_ca_44445.crt) to certs/ before building."; \
+            exit 1; \
+        }; \
         install -d /usr/local/share/ca-certificates/donsetch-extra && \
         cp /tmp/extra-certs/*.crt /usr/local/share/ca-certificates/donsetch-extra/ && \
         update-ca-certificates && \
