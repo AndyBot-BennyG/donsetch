@@ -1169,7 +1169,7 @@ pub(super) async fn fetch_single(daemon: &Arc<Daemon>, args: &Value, url: &str) 
                 let mut names: Vec<&str> = lanes.keys().map(String::as_str).collect();
                 names.sort();
                 return tool_error_structured(
-                    &format!(
+                    format!(
                         "proxy lane name {lane_name:?} contains invalid characters (allowed: [a-z0-9_]); configured lanes: {}",
                         if names.is_empty() {
                             "(none)".to_string()
@@ -1186,7 +1186,7 @@ pub(super) async fn fetch_single(daemon: &Arc<Daemon>, args: &Value, url: &str) 
                 let mut names: Vec<&str> = lanes.keys().map(String::as_str).collect();
                 names.sort();
                 return tool_error_structured(
-                    &format!(
+                    format!(
                         "proxy lane {lane_name:?} is not configured; configured lanes: {}",
                         if names.is_empty() {
                             "(none)".to_string()
@@ -1204,7 +1204,7 @@ pub(super) async fn fetch_single(daemon: &Arc<Daemon>, args: &Value, url: &str) 
                 Ok(u) => u,
                 Err(()) => {
                     return tool_error_structured(
-                        &format!(
+                        format!(
                             "proxy lane {lane_name:?}: RNG failure — cannot generate a session ID; retry the request"
                         ),
                         "proxy.rng_failure",
@@ -1217,7 +1217,7 @@ pub(super) async fn fetch_single(daemon: &Arc<Daemon>, args: &Value, url: &str) 
                 Ok(proxy) => RequestRoute::pinned(proxy),
                 Err(_) => {
                     return tool_error_structured(
-                        &format!(
+                        format!(
                             "proxy lane {lane_name:?} is misconfigured (value failed to parse as a proxy URL)"
                         ),
                         "proxy.misconfigured",
@@ -6807,10 +6807,7 @@ mod proxy_lane_unit_tests {
             if let Ok((mut s, _)) = listener.accept() {
                 let mut buf = [0u8; 4096];
                 if let Ok(n) = s.read(&mut buf) {
-                    if std::str::from_utf8(&buf[..n])
-                        .unwrap_or("")
-                        .starts_with("CONNECT")
-                    {
+                    if std::str::from_utf8(&buf[..n]).unwrap_or("").starts_with("CONNECT") {
                         *got_connect2.lock().unwrap() = true;
                     }
                 }
