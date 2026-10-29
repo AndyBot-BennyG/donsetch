@@ -2147,60 +2147,60 @@ async fn fetch_single_inner(
             raw_html = Some(crate::extract::charset::decode(&o.body, &ct));
             final_url = o.url.clone();
         } else {
-        match extract::extract_off_worker(&o.body, &ct, &o.url, &opts).await {
-            Ok(e) => {
-                final_url = o.url.clone();
-                final_ex = Some(e);
-            }
-            Err(extract::ExtractError::Wall(v)) => {
-                extraction_wall = Some(v);
-                final_verdict = format!("{v:?}");
-                if tier == "1" {
+            match extract::extract_off_worker(&o.body, &ct, &o.url, &opts).await {
+                Ok(e) => {
+                    final_url = o.url.clone();
+                    final_ex = Some(e);
+                }
+                Err(extract::ExtractError::Wall(v)) => {
+                    extraction_wall = Some(v);
+                    final_verdict = format!("{v:?}");
+                    if tier == "1" {
+                        return tool_error_structured(
+                            format!("access wall at {url}: {v:?}"),
+                            "walled",
+                            Some(json!({
+                                "url": url, "status": final_status, "verdict": final_verdict,
+                                "next_action": if matches!(v, Verdict::Challenge(_)) {
+                                    "browser escalation disabled by tier=1; retry with tier=2 or tier=auto".to_string()
+                                } else { next_action_for(Some(v), final_status, "walled") }, "escalation": trace.value(),
+                            })),
+                        );
+                    }
+                }
+                Err(extract::ExtractError::SelectorNoMatch {
+                    selector,
+                    inspected,
+                }) => {
                     return tool_error_structured(
-                        format!("access wall at {url}: {v:?}"),
-                        "walled",
+                        format!("CSS selector {selector:?} matched no elements"),
+                        "permanent",
+                        Some(
+                            json!({"url": orig_url, "code": "selector.nomatch", "elements_inspected": inspected,
+                        "next_action": "correct the selector, or omit it to read the page"}),
+                        ),
+                    );
+                }
+                Err(extract::ExtractError::BadSelector(selector)) => {
+                    return tool_error_structured(
+                        format!("invalid CSS selector: {selector}"),
+                        "permanent",
+                        Some(
+                            json!({"url": orig_url, "code": "selector.invalid", "next_action": "correct the CSS selector syntax"}),
+                        ),
+                    );
+                }
+                Err(e) => {
+                    return tool_error_structured(
+                        format!("content extraction failed: {e}"),
+                        "transient",
                         Some(json!({
-                            "url": url, "status": final_status, "verdict": final_verdict,
-                            "next_action": if matches!(v, Verdict::Challenge(_)) {
-                                "browser escalation disabled by tier=1; retry with tier=2 or tier=auto".to_string()
-                            } else { next_action_for(Some(v), final_status, "walled") }, "escalation": trace.value(),
+                            "url": url,
+                            "next_action": "retry with a narrow selector= or focus=; if the page is JS-heavy, tier=2 renders it in a browser",
                         })),
                     );
                 }
             }
-            Err(extract::ExtractError::SelectorNoMatch {
-                selector,
-                inspected,
-            }) => {
-                return tool_error_structured(
-                    format!("CSS selector {selector:?} matched no elements"),
-                    "permanent",
-                    Some(
-                        json!({"url": orig_url, "code": "selector.nomatch", "elements_inspected": inspected,
-                        "next_action": "correct the selector, or omit it to read the page"}),
-                    ),
-                );
-            }
-            Err(extract::ExtractError::BadSelector(selector)) => {
-                return tool_error_structured(
-                    format!("invalid CSS selector: {selector}"),
-                    "permanent",
-                    Some(
-                        json!({"url": orig_url, "code": "selector.invalid", "next_action": "correct the CSS selector syntax"}),
-                    ),
-                );
-            }
-            Err(e) => {
-                return tool_error_structured(
-                    format!("content extraction failed: {e}"),
-                    "transient",
-                    Some(json!({
-                        "url": url,
-                        "next_action": "retry with a narrow selector= or focus=; if the page is JS-heavy, tier=2 renders it in a browser",
-                    })),
-                );
-            }
-        }
         } // else (want_raw) block
     }
 
@@ -5066,8 +5066,7 @@ mod raw_passthrough_tests {
         let schema = spec::mcp_schema(tool);
         let props = &schema["inputSchema"]["properties"];
         assert_eq!(
-            props["raw"]["type"],
-            "boolean",
+            props["raw"]["type"], "boolean",
             "raw must be a boolean in the MCP schema"
         );
         // raw is optional: it must NOT be in the required array.
@@ -5113,7 +5112,10 @@ mod raw_passthrough_tests {
             .try_get_matches_from(["fetch", "https://example.com", "--raw"])
             .expect("--raw must be accepted by the CLI");
         let args = spec::matches_to_json(tool, &matches_with);
-        assert_eq!(args["raw"], true, "--raw must produce raw: true in the args");
+        assert_eq!(
+            args["raw"], true,
+            "--raw must produce raw: true in the args"
+        );
 
         let matches_without = spec::cli_command(tool)
             .try_get_matches_from(["fetch", "https://example.com"])
@@ -5136,7 +5138,10 @@ mod raw_passthrough_tests {
 
     /// Minimal HTTP/1.1 server: accepts connections, serves a fixed response
     /// body, then closes each connection.
-    fn one_shot_server(body: &'static str, content_type: &'static str) -> (String, std::net::TcpListener) {
+    fn one_shot_server(
+        body: &'static str,
+        content_type: &'static str,
+    ) -> (String, std::net::TcpListener) {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
@@ -5173,7 +5178,8 @@ mod raw_passthrough_tests {
             std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
             std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
         }
-        const HTML: &str = "<html><head><title>T</title></head><body><p>Hello raw world</p></body></html>";
+        const HTML: &str =
+            "<html><head><title>T</title></head><body><p>Hello raw world</p></body></html>";
         let (url, _listener) = one_shot_server(HTML, "text/html; charset=utf-8");
 
         std::thread::Builder::new()
@@ -5184,9 +5190,8 @@ mod raw_passthrough_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         let args = serde_json::json!({
                             "url": url,
                             "raw": true,
@@ -5268,9 +5273,8 @@ mod raw_passthrough_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         let args = serde_json::json!({
                             "url": url,
                             "tier": "1",
@@ -5359,9 +5363,8 @@ mod raw_passthrough_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         let args = serde_json::json!({
                             "url": url,
                             "raw": true,
@@ -5398,10 +5401,7 @@ mod raw_passthrough_tests {
                         );
 
                         // status must be 200 (the mock returns 200).
-                        assert_eq!(
-                            sc["status"], 200,
-                            "structuredContent.status must be 200"
-                        );
+                        assert_eq!(sc["status"], 200, "structuredContent.status must be 200");
 
                         // url must be non-empty.
                         assert!(
@@ -6570,7 +6570,10 @@ mod proxy_lane_unit_tests {
         // Normal path: RNG succeeds, returns Ok with placeholder replaced.
         let raw = "http://user-session-{session}:pass@host:44445";
         let result = substitute_session(raw);
-        assert!(result.is_ok(), "substitute_session must succeed with healthy RNG");
+        assert!(
+            result.is_ok(),
+            "substitute_session must succeed with healthy RNG"
+        );
         let val = result.unwrap();
         assert!(
             !val.contains("{session}"),
@@ -6590,8 +6593,7 @@ mod proxy_lane_unit_tests {
     #[test]
     fn unknown_lane_error_does_not_echo_credential() {
         // Build a lane map directly (no process-wide env mutation).
-        let mut lanes: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
+        let mut lanes: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         lanes.insert(
             "credtest_unit".to_string(),
             "http://SENTINEL_CRED@proxy:8888".to_string(),
@@ -6671,9 +6673,11 @@ mod proxy_lane_unit_tests {
                         // Respond 200; the client will then attempt TLS which
                         // fails because there is no real upstream — that is fine,
                         // we only need CONNECT to prove the lane was used.
-                        let _ = s.write_all(b"HTTP/1.1 200 Connection Established
+                        let _ = s.write_all(
+                            b"HTTP/1.1 200 Connection Established
 
-");
+",
+                        );
                     }
                 }
             }
@@ -6692,9 +6696,8 @@ mod proxy_lane_unit_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         let args = serde_json::json!({
                             "url": "https://example.com/",
                             "tier": "1",
@@ -6744,9 +6747,8 @@ mod proxy_lane_unit_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         // Request a nonexistent lane — the handler error must not
                         // echo any configured lane's value.
                         let args = serde_json::json!({
@@ -6807,7 +6809,9 @@ mod proxy_lane_unit_tests {
             if let Ok((mut s, _)) = listener.accept() {
                 let mut buf = [0u8; 4096];
                 if let Ok(n) = s.read(&mut buf)
-                    && std::str::from_utf8(&buf[..n]).unwrap_or("").starts_with("CONNECT")
+                    && std::str::from_utf8(&buf[..n])
+                        .unwrap_or("")
+                        .starts_with("CONNECT")
                 {
                     *got_connect2.lock().unwrap() = true;
                 }
@@ -6832,9 +6836,8 @@ mod proxy_lane_unit_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         // No "proxy" key in args — must use normal routing.
                         let args = serde_json::json!({
                             "url": &target_url,
@@ -6868,7 +6871,10 @@ mod proxy_lane_unit_tests {
         unsafe {
             std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
             std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
-            std::env::set_var("DONSETCH_PROXY_LANE_GUARDTEST", "http://user:pass@proxy:44445");
+            std::env::set_var(
+                "DONSETCH_PROXY_LANE_GUARDTEST",
+                "http://user:pass@proxy:44445",
+            );
         }
 
         let error_str = std::thread::Builder::new()
@@ -6879,9 +6885,8 @@ mod proxy_lane_unit_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         // tier=auto (default) with a proxy arg — must be rejected.
                         let args = serde_json::json!({
                             "url": "https://example.com/",

@@ -4696,9 +4696,7 @@ mod proxy_lane_tests {
 
     #[test]
     fn reads_env_var_and_lowercases_name() {
-        let lanes = proxy_lanes_from([
-            ("DONSETCH_PROXY_LANE_TESTUNIT_A", "http://proxy:8080"),
-        ]);
+        let lanes = proxy_lanes_from([("DONSETCH_PROXY_LANE_TESTUNIT_A", "http://proxy:8080")]);
         assert_eq!(
             lanes.get("testunit_a"),
             Some(&"http://proxy:8080".to_string())
@@ -4708,9 +4706,7 @@ mod proxy_lane_tests {
     #[test]
     fn filters_names_with_invalid_chars() {
         // Hyphen in suffix => name "bad-lane" fails [a-z0-9_]+ check => excluded.
-        let lanes = proxy_lanes_from([
-            ("DONSETCH_PROXY_LANE_BAD-LANE", "http://proxy:7070"),
-        ]);
+        let lanes = proxy_lanes_from([("DONSETCH_PROXY_LANE_BAD-LANE", "http://proxy:7070")]);
         assert!(
             !lanes.contains_key("bad-lane"),
             "hyphen in name must be excluded"
@@ -4720,9 +4716,10 @@ mod proxy_lane_tests {
     #[test]
     fn log_line_does_not_contain_values() {
         // The log message format must contain only names, not values.
-        let lanes = proxy_lanes_from([
-            ("DONSETCH_PROXY_LANE_NOECHO_UNIT", "http://SECRET@proxy:9999"),
-        ]);
+        let lanes = proxy_lanes_from([(
+            "DONSETCH_PROXY_LANE_NOECHO_UNIT",
+            "http://SECRET@proxy:9999",
+        )]);
         let mut names: Vec<&str> = lanes.keys().map(String::as_str).collect();
         names.sort();
         let log_line = format!("[donsetch] proxy lanes configured: {}", names.join(", "));
@@ -4748,8 +4745,14 @@ mod proxy_lane_tests {
             ("HTTPS_PROXY", "http://proxy:5678"),
             ("DONSETCH_PROXY_LANE_REAL_LANE", "http://proxy:9999"),
         ]);
-        assert!(!lanes.contains_key("something_else"), "non-lane var must be excluded");
-        assert!(lanes.contains_key("real_lane"), "real lane must be included");
+        assert!(
+            !lanes.contains_key("something_else"),
+            "non-lane var must be excluded"
+        );
+        assert!(
+            lanes.contains_key("real_lane"),
+            "real lane must be included"
+        );
         assert_eq!(lanes.len(), 1);
     }
 
