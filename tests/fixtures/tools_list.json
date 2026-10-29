@@ -105,6 +105,10 @@
             "description": "Continue from a previous next_offset. Reuse the same URL and any focus, section, selector or rendering fields from that fetch.",
             "type": "integer"
           },
+          "proxy": {
+            "description": "Named proxy lane for this request (e.g. \"residential\"). Lanes are service-side env vars (DONSETCH_PROXY_LANE_<NAME>); credentials stay on the server. Requires tier=\"1\" (enforced; auto or tier=2 returns proxy.tier_required). Unknown lane: error listing lane names only. Misconfigured lane: error without echoing the value.",
+            "type": "string"
+          },
           "raw": {
             "description": "Return raw HTML instead of extracted markdown. Tier-1: decoded HTTP response body. Tier-2 (after challenge solve): fully-rendered DOM HTML. Default false; omit for standard markdown output.",
             "type": "boolean"

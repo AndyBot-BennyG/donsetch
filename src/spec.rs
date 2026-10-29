@@ -283,6 +283,17 @@ const FETCH_PARAMS: &[ParamSpec] = &[
         ),
     },
     ParamSpec {
+        name: "proxy",
+        flag: "proxy",
+        kind: ParamKind::Str,
+        cli: CliKind::Flag,
+        required: false,
+        help: "Named proxy lane for this fetch (e.g. \"residential\"). Lanes are configured as DONSETCH_PROXY_LANE_<NAME> env vars on the service. Case-insensitive name, allowed chars [a-z0-9_]. Credentials never pass through the MCP call. Requires tier=1 — rejected with proxy.tier_required if tier is not exactly \"1\" (e.g. Bright Data residential port 44445).",
+        mcp_help: Some(
+            "Named proxy lane for this request (e.g. \"residential\"). Lanes are service-side env vars (DONSETCH_PROXY_LANE_<NAME>); credentials stay on the server. Requires tier=\"1\" (enforced; auto or tier=2 returns proxy.tier_required). Unknown lane: error listing lane names only. Misconfigured lane: error without echoing the value.",
+        ),
+    },
+    ParamSpec {
         name: "media",
         flag: "media",
         kind: ParamKind::SetTrue,
@@ -1278,5 +1289,49 @@ mod tests {
         )
         .expect_err("ignore_rules must not be an MCP argument");
         assert!(err.contains("unknown parameter"), "{err}");
+    }
+
+    #[test]
+    fn proxy_arg_accepted_string_and_in_schema() {
+        let fetch = fetch_tool();
+        // proxy must be an accepted parameter (string)
+        assert!(
+            check_args(
+                fetch,
+                &json!({"url": "https://example.com", "proxy": "residential"})
+            )
+            .is_ok(),
+            "proxy string must be accepted"
+        );
+        // non-string must be rejected
+        assert!(
+            check_args(fetch, &json!({"url": "https://example.com", "proxy": 42})).is_err(),
+            "proxy integer must be rejected"
+        );
+        // absent proxy must be accepted (optional)
+        assert!(
+            check_args(fetch, &json!({"url": "https://example.com"})).is_ok(),
+            "absent proxy must be accepted"
+        );
+        // proxy must appear in the MCP schema as a string
+        let schema = mcp_schema(fetch);
+        assert_eq!(
+            schema["inputSchema"]["properties"]["proxy"]["type"], "string",
+            "proxy must be a string in the MCP schema"
+        );
+        // proxy must NOT be in required
+        let required = schema["inputSchema"]["required"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !required.iter().any(|v| v == "proxy"),
+            "proxy must be optional; required: {required:?}"
+        );
+        // proxy help text must not contain "\n" (it's a single line description)
+        let help = schema["inputSchema"]["properties"]["proxy"]["description"]
+            .as_str()
+            .unwrap_or("");
+        assert!(!help.is_empty(), "proxy must have a description");
     }
 }

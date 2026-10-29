@@ -46,3 +46,4 @@ npm/LICENSE
 *.tgz
 bench/regression-results.json
 /libonnxruntime.so
+certs/*.crt

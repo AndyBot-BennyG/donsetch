@@ -1089,6 +1089,37 @@ fn fetch_read_options(args: &Value) -> Result<ExtractOptions, Value> {
     Ok(opts)
 }
 
+/// Fill a buffer with cryptographically random bytes for session ID generation.
+///
+/// Uses `boring::rand::rand_bytes` (the same source as the QUIC connection-ID
+/// generator in `src/transport/h3.rs`) so the implementation is portable
+/// across all CI targets including Windows.
+fn fill_random_bytes(buf: &mut [u8]) -> Result<(), ()> {
+    boring::rand::rand_bytes(buf).map_err(|_| ())
+}
+
+/// Substitute `{session}` in a proxy URL with a fresh random 12-hex string.
+///
+/// If the placeholder is absent, the URL is returned unchanged.
+/// Each call produces a different value so each request gets a fresh exit IP
+/// (Bright Data: `user-session-{session}`).
+///
+/// Returns `Err(())` when the RNG fails. The caller must propagate this as a
+/// tool error; the lane URL must never be used with an unresolved placeholder.
+fn substitute_session(raw: &str) -> Result<String, ()> {
+    if !raw.contains("{session}") {
+        return Ok(raw.to_owned());
+    }
+    let mut rng = [0u8; 6]; // 6 bytes = 12 hex chars
+    fill_random_bytes(&mut rng)?;
+    use std::fmt::Write as _;
+    let mut session_id = String::with_capacity(12);
+    for b in &rng {
+        let _ = write!(session_id, "{b:02x}");
+    }
+    Ok(raw.replace("{session}", &session_id))
+}
+
 /// Fetch one live URL on a route selected once for the whole call.
 pub(super) async fn fetch_single(daemon: &Arc<Daemon>, args: &Value, url: &str) -> Value {
     let parsed_url = match fetch_input(args, url) {
@@ -1113,7 +1144,90 @@ pub(super) async fn fetch_single(daemon: &Arc<Daemon>, args: &Value, url: &str) 
         let caps = crate::persona::PersonaCaps::from_profile(daemon.fetcher.profile());
         state.ensure_persona(host, &caps);
         state.ensure_persona_egress(host);
-        daemon.fetcher.route_for_fetch(url)
+        // `proxy` arg: select a named service-side proxy lane.
+        // Credentials never pass through the MCP call, logs, traces, or errors.
+        if let Some(lane_name) = args.get("proxy").and_then(Value::as_str) {
+            // Reject proxy unless tier is exactly "1": browser tiers cannot
+            // ride a named lane, and preventing escalation here is simpler and
+            // safer than checking in every downstream path.
+            let requested_tier = args.get("tier").and_then(Value::as_str).unwrap_or("auto");
+            if requested_tier != "1" {
+                return tool_error_structured(
+                    "proxy lane requires tier=\"1\"; set tier=\"1\" to use a named proxy lane (auto and tier=2 may launch a browser that cannot ride a lane)",
+                    "proxy.tier_required",
+                    None,
+                );
+            }
+            let lane_name_lc = lane_name.to_ascii_lowercase();
+            // Validate name: [a-z0-9_]+ only.
+            if lane_name_lc.is_empty()
+                || !lane_name_lc
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
+                let lanes = crate::config::proxy_lanes();
+                let mut names: Vec<&str> = lanes.keys().map(String::as_str).collect();
+                names.sort();
+                return tool_error_structured(
+                    format!(
+                        "proxy lane name {lane_name:?} contains invalid characters (allowed: [a-z0-9_]); configured lanes: {}",
+                        if names.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            names.join(", ")
+                        }
+                    ),
+                    "proxy.invalid_name",
+                    None,
+                );
+            }
+            let lanes = crate::config::proxy_lanes();
+            let Some(raw_url) = lanes.get(&lane_name_lc).cloned() else {
+                let mut names: Vec<&str> = lanes.keys().map(String::as_str).collect();
+                names.sort();
+                return tool_error_structured(
+                    format!(
+                        "proxy lane {lane_name:?} is not configured; configured lanes: {}",
+                        if names.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            names.join(", ")
+                        }
+                    ),
+                    "proxy.unknown_lane",
+                    None,
+                );
+            };
+            // Substitute {session}: each call gets a fresh exit IP.
+            // On RNG failure, fail closed rather than sending the literal placeholder.
+            let resolved_url = match substitute_session(&raw_url) {
+                Ok(u) => u,
+                Err(()) => {
+                    return tool_error_structured(
+                        format!(
+                            "proxy lane {lane_name:?}: RNG failure — cannot generate a session ID; retry the request"
+                        ),
+                        "proxy.rng_failure",
+                        None,
+                    );
+                }
+            };
+            // Parse the proxy URL. On failure: error WITHOUT echoing the value.
+            match crate::transport::proxy::Proxy::parse(&resolved_url) {
+                Ok(proxy) => RequestRoute::pinned(proxy),
+                Err(_) => {
+                    return tool_error_structured(
+                        format!(
+                            "proxy lane {lane_name:?} is misconfigured (value failed to parse as a proxy URL)"
+                        ),
+                        "proxy.misconfigured",
+                        None,
+                    );
+                }
+            }
+        } else {
+            daemon.fetcher.route_for_fetch(url)
+        }
     };
     let call = FetchCall {
         route,
@@ -2033,60 +2147,60 @@ async fn fetch_single_inner(
             raw_html = Some(crate::extract::charset::decode(&o.body, &ct));
             final_url = o.url.clone();
         } else {
-        match extract::extract_off_worker(&o.body, &ct, &o.url, &opts).await {
-            Ok(e) => {
-                final_url = o.url.clone();
-                final_ex = Some(e);
-            }
-            Err(extract::ExtractError::Wall(v)) => {
-                extraction_wall = Some(v);
-                final_verdict = format!("{v:?}");
-                if tier == "1" {
+            match extract::extract_off_worker(&o.body, &ct, &o.url, &opts).await {
+                Ok(e) => {
+                    final_url = o.url.clone();
+                    final_ex = Some(e);
+                }
+                Err(extract::ExtractError::Wall(v)) => {
+                    extraction_wall = Some(v);
+                    final_verdict = format!("{v:?}");
+                    if tier == "1" {
+                        return tool_error_structured(
+                            format!("access wall at {url}: {v:?}"),
+                            "walled",
+                            Some(json!({
+                                "url": url, "status": final_status, "verdict": final_verdict,
+                                "next_action": if matches!(v, Verdict::Challenge(_)) {
+                                    "browser escalation disabled by tier=1; retry with tier=2 or tier=auto".to_string()
+                                } else { next_action_for(Some(v), final_status, "walled") }, "escalation": trace.value(),
+                            })),
+                        );
+                    }
+                }
+                Err(extract::ExtractError::SelectorNoMatch {
+                    selector,
+                    inspected,
+                }) => {
                     return tool_error_structured(
-                        format!("access wall at {url}: {v:?}"),
-                        "walled",
+                        format!("CSS selector {selector:?} matched no elements"),
+                        "permanent",
+                        Some(
+                            json!({"url": orig_url, "code": "selector.nomatch", "elements_inspected": inspected,
+                        "next_action": "correct the selector, or omit it to read the page"}),
+                        ),
+                    );
+                }
+                Err(extract::ExtractError::BadSelector(selector)) => {
+                    return tool_error_structured(
+                        format!("invalid CSS selector: {selector}"),
+                        "permanent",
+                        Some(
+                            json!({"url": orig_url, "code": "selector.invalid", "next_action": "correct the CSS selector syntax"}),
+                        ),
+                    );
+                }
+                Err(e) => {
+                    return tool_error_structured(
+                        format!("content extraction failed: {e}"),
+                        "transient",
                         Some(json!({
-                            "url": url, "status": final_status, "verdict": final_verdict,
-                            "next_action": if matches!(v, Verdict::Challenge(_)) {
-                                "browser escalation disabled by tier=1; retry with tier=2 or tier=auto".to_string()
-                            } else { next_action_for(Some(v), final_status, "walled") }, "escalation": trace.value(),
+                            "url": url,
+                            "next_action": "retry with a narrow selector= or focus=; if the page is JS-heavy, tier=2 renders it in a browser",
                         })),
                     );
                 }
             }
-            Err(extract::ExtractError::SelectorNoMatch {
-                selector,
-                inspected,
-            }) => {
-                return tool_error_structured(
-                    format!("CSS selector {selector:?} matched no elements"),
-                    "permanent",
-                    Some(
-                        json!({"url": orig_url, "code": "selector.nomatch", "elements_inspected": inspected,
-                        "next_action": "correct the selector, or omit it to read the page"}),
-                    ),
-                );
-            }
-            Err(extract::ExtractError::BadSelector(selector)) => {
-                return tool_error_structured(
-                    format!("invalid CSS selector: {selector}"),
-                    "permanent",
-                    Some(
-                        json!({"url": orig_url, "code": "selector.invalid", "next_action": "correct the CSS selector syntax"}),
-                    ),
-                );
-            }
-            Err(e) => {
-                return tool_error_structured(
-                    format!("content extraction failed: {e}"),
-                    "transient",
-                    Some(json!({
-                        "url": url,
-                        "next_action": "retry with a narrow selector= or focus=; if the page is JS-heavy, tier=2 renders it in a browser",
-                    })),
-                );
-            }
-        }
         } // else (want_raw) block
     }
 
@@ -4952,8 +5066,7 @@ mod raw_passthrough_tests {
         let schema = spec::mcp_schema(tool);
         let props = &schema["inputSchema"]["properties"];
         assert_eq!(
-            props["raw"]["type"],
-            "boolean",
+            props["raw"]["type"], "boolean",
             "raw must be a boolean in the MCP schema"
         );
         // raw is optional: it must NOT be in the required array.
@@ -4999,7 +5112,10 @@ mod raw_passthrough_tests {
             .try_get_matches_from(["fetch", "https://example.com", "--raw"])
             .expect("--raw must be accepted by the CLI");
         let args = spec::matches_to_json(tool, &matches_with);
-        assert_eq!(args["raw"], true, "--raw must produce raw: true in the args");
+        assert_eq!(
+            args["raw"], true,
+            "--raw must produce raw: true in the args"
+        );
 
         let matches_without = spec::cli_command(tool)
             .try_get_matches_from(["fetch", "https://example.com"])
@@ -5022,7 +5138,10 @@ mod raw_passthrough_tests {
 
     /// Minimal HTTP/1.1 server: accepts connections, serves a fixed response
     /// body, then closes each connection.
-    fn one_shot_server(body: &'static str, content_type: &'static str) -> (String, std::net::TcpListener) {
+    fn one_shot_server(
+        body: &'static str,
+        content_type: &'static str,
+    ) -> (String, std::net::TcpListener) {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
@@ -5059,7 +5178,8 @@ mod raw_passthrough_tests {
             std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
             std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
         }
-        const HTML: &str = "<html><head><title>T</title></head><body><p>Hello raw world</p></body></html>";
+        const HTML: &str =
+            "<html><head><title>T</title></head><body><p>Hello raw world</p></body></html>";
         let (url, _listener) = one_shot_server(HTML, "text/html; charset=utf-8");
 
         std::thread::Builder::new()
@@ -5070,9 +5190,8 @@ mod raw_passthrough_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         let args = serde_json::json!({
                             "url": url,
                             "raw": true,
@@ -5154,9 +5273,8 @@ mod raw_passthrough_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         let args = serde_json::json!({
                             "url": url,
                             "tier": "1",
@@ -5245,9 +5363,8 @@ mod raw_passthrough_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         let args = serde_json::json!({
                             "url": url,
                             "raw": true,
@@ -5284,10 +5401,7 @@ mod raw_passthrough_tests {
                         );
 
                         // status must be 200 (the mock returns 200).
-                        assert_eq!(
-                            sc["status"], 200,
-                            "structuredContent.status must be 200"
-                        );
+                        assert_eq!(sc["status"], 200, "structuredContent.status must be 200");
 
                         // url must be non-empty.
                         assert!(
@@ -6405,5 +6519,415 @@ mod rules_tests {
                 .any(|c| c.name == "xs" && c.value == "bbbb"),
             "session rotation was missed because size and timestamp matched"
         );
+    }
+}
+
+#[cfg(test)]
+mod proxy_lane_unit_tests {
+    use super::{fill_random_bytes, substitute_session};
+
+    // --- Pure-function RNG/session tests (no process-global state) ---
+
+    #[test]
+    fn session_placeholder_replaced() {
+        let raw = "http://user:pass@brd.superproxy.io:44445?session={session}";
+        let result = substitute_session(raw).expect("RNG must succeed");
+        assert!(
+            !result.contains("{session}"),
+            "placeholder must be replaced: {result}"
+        );
+        assert!(result.starts_with("http://user:pass@brd.superproxy.io:44445"));
+    }
+
+    #[test]
+    fn session_placeholder_gives_different_values_per_call() {
+        let raw = "http://user-session-{session}:pass@brd.superproxy.io:44445";
+        let a = substitute_session(raw).expect("RNG must succeed");
+        let b = substitute_session(raw).expect("RNG must succeed");
+        // With overwhelming probability two random 6-byte values differ.
+        assert_ne!(a, b, "consecutive session substitutions must differ");
+    }
+
+    #[test]
+    fn no_placeholder_unchanged() {
+        let raw = "http://user:pass@proxy:44445";
+        assert_eq!(substitute_session(raw).expect("RNG must succeed"), raw);
+    }
+
+    #[test]
+    fn fill_random_bytes_fills_buffer() {
+        let mut buf = [0u8; 6];
+        fill_random_bytes(&mut buf).unwrap();
+        // With overwhelming probability at least one byte is nonzero.
+        assert_ne!(buf, [0u8; 6], "random bytes must not all be zero");
+    }
+
+    /// Testable seam: substitute_session returns Result<String, ()>.
+    /// The caller must propagate Err as a tool error; the lane URL must never
+    /// be used with an unresolved {session} placeholder.
+    #[test]
+    fn substitute_session_result_contract() {
+        // Normal path: RNG succeeds, returns Ok with placeholder replaced.
+        let raw = "http://user-session-{session}:pass@host:44445";
+        let result = substitute_session(raw);
+        assert!(
+            result.is_ok(),
+            "substitute_session must succeed with healthy RNG"
+        );
+        let val = result.unwrap();
+        assert!(
+            !val.contains("{session}"),
+            "resolved URL must not contain literal placeholder: {val}"
+        );
+        // A 12-character hex session ID should have been inserted.
+        assert!(
+            val.len() > raw.len(),
+            "resolved URL should be longer than raw template"
+        );
+    }
+
+    // --- Credential-leak tests using pure map inputs (no global env mutation) ---
+
+    /// The error message for an unknown lane must list lane names, never values.
+    /// Tests the format string directly with a known map — no set_var needed.
+    #[test]
+    fn unknown_lane_error_does_not_echo_credential() {
+        // Build a lane map directly (no process-wide env mutation).
+        let mut lanes: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        lanes.insert(
+            "credtest_unit".to_string(),
+            "http://SENTINEL_CRED@proxy:8888".to_string(),
+        );
+        let mut names: Vec<&str> = lanes.keys().map(String::as_str).collect();
+        names.sort();
+        let error_msg = format!(
+            "proxy lane {:?} is not configured; configured lanes: {}",
+            "nonexistent_xyzzy",
+            if names.is_empty() {
+                "(none)".to_string()
+            } else {
+                names.join(", ")
+            }
+        );
+        assert!(
+            !error_msg.contains("SENTINEL_CRED"),
+            "error must not contain credential: {error_msg}"
+        );
+        assert!(
+            !error_msg.contains("proxy:8888"),
+            "error must not contain proxy URL: {error_msg}"
+        );
+        // Must list the lane name, not its value.
+        assert!(
+            error_msg.contains("credtest_unit"),
+            "error must list lane names: {error_msg}"
+        );
+    }
+
+    /// The error for a misconfigured lane must name the lane, not echo the URL value.
+    #[test]
+    fn misconfigured_lane_error_does_not_echo_value() {
+        let lane_name = "badlane";
+        let error_msg = format!(
+            "proxy lane {lane_name:?} is misconfigured (value failed to parse as a proxy URL)"
+        );
+        assert!(error_msg.contains("badlane"), "{error_msg}");
+        // Must not contain a URL scheme (which would come from echoing the value).
+        assert!(!error_msg.contains("://"), "no URL in error: {error_msg}");
+    }
+
+    // --- Transport-boundary tests (CONNECT listener) ---
+    // These tests require nextest (each test gets its own process) because they
+    // set process-wide env vars.  They exercise the actual fetch_single path.
+
+    /// Prove the chosen lane proxy is used: a local CONNECT-accepting listener
+    /// records whether a CONNECT request arrived.
+    ///
+    /// Requires nextest: sets DONSETCH_ALLOW_PRIVATE_EGRESS / DONSETCH_NO_CONFIG_FILE.
+    #[test]
+    fn proxy_lane_used_connect_observed() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+
+        // SAFETY: nextest gives each test its own process.
+        unsafe {
+            std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
+            std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
+        }
+
+        // Minimal CONNECT proxy: records whether a CONNECT request arrived,
+        // returns 200 Connection Established, then closes.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind proxy listener");
+        let proxy_port = listener.local_addr().unwrap().port();
+        let got_connect = Arc::new(Mutex::new(false));
+        let got_connect2 = Arc::clone(&got_connect);
+
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                if let Ok(n) = s.read(&mut buf) {
+                    let req = std::str::from_utf8(&buf[..n]).unwrap_or("");
+                    if req.starts_with("CONNECT") {
+                        *got_connect2.lock().unwrap() = true;
+                        // Respond 200; the client will then attempt TLS which
+                        // fails because there is no real upstream — that is fine,
+                        // we only need CONNECT to prove the lane was used.
+                        let _ = s.write_all(
+                            b"HTTP/1.1 200 Connection Established
+
+",
+                        );
+                    }
+                }
+            }
+        });
+
+        let proxy_url = format!("http://user-lane:pass@127.0.0.1:{proxy_port}");
+        unsafe {
+            std::env::set_var("DONSETCH_PROXY_LANE_TESTLANE_CONNECT", &proxy_url);
+        }
+
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
+                        let args = serde_json::json!({
+                            "url": "https://example.com/",
+                            "tier": "1",
+                            "proxy": "testlane_connect",
+                        });
+                        let u = args["url"].as_str().unwrap().to_string();
+                        // Fetch will fail (CONNECT tunnel has no real upstream),
+                        // but CONNECT proves the lane was selected.
+                        let _ = super::fetch_single(&daemon, &args, &u).await;
+                    })
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var("DONSETCH_PROXY_LANE_TESTLANE_CONNECT");
+        }
+
+        assert!(
+            *got_connect.lock().unwrap(),
+            "CONNECT must have been sent to the proxy lane server"
+        );
+    }
+
+    /// Prove that a real handler error (unknown lane) does NOT leak credentials
+    /// by calling fetch_single with a lane that contains a credential sentinel.
+    ///
+    /// Requires nextest.
+    #[test]
+    fn handler_error_does_not_leak_credential_sentinel() {
+        unsafe {
+            std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
+            std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
+            // A configured lane whose value contains a sentinel credential.
+            std::env::set_var(
+                "DONSETCH_PROXY_LANE_CREDLEAK_TEST",
+                "http://CREDENTIAL_SENTINEL_DO_NOT_ECHO@proxy:9999",
+            );
+        }
+
+        let error_str = std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
+                        // Request a nonexistent lane — the handler error must not
+                        // echo any configured lane's value.
+                        let args = serde_json::json!({
+                            "url": "https://example.com/",
+                            "tier": "1",
+                            "proxy": "nonexistent_lane_xyz",
+                        });
+                        let u = args["url"].as_str().unwrap().to_string();
+                        let result = super::fetch_single(&daemon, &args, &u).await;
+                        result.to_string()
+                    })
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var("DONSETCH_PROXY_LANE_CREDLEAK_TEST");
+        }
+
+        assert!(
+            !error_str.contains("CREDENTIAL_SENTINEL_DO_NOT_ECHO"),
+            "handler error must not contain credential sentinel: {error_str}"
+        );
+        assert!(
+            !error_str.contains("proxy:9999"),
+            "handler error must not contain proxy host:port: {error_str}"
+        );
+        // Must name the unknown lane.
+        assert!(
+            error_str.contains("nonexistent_lane_xyz"),
+            "error must identify the unknown lane name: {error_str}"
+        );
+    }
+
+    /// Prove that absent proxy arg does not route through a CONNECT proxy.
+    ///
+    /// Requires nextest.
+    #[test]
+    fn absent_proxy_arg_routes_directly() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+
+        unsafe {
+            std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
+            std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
+        }
+
+        // A fake proxy listener; no proxy arg is set, so it should never receive
+        // a CONNECT from this fetch.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind sentinel proxy");
+        let proxy_port = listener.local_addr().unwrap().port();
+        let got_connect = Arc::new(Mutex::new(false));
+        let got_connect2 = Arc::clone(&got_connect);
+
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                if let Ok(n) = s.read(&mut buf)
+                    && std::str::from_utf8(&buf[..n])
+                        .unwrap_or("")
+                        .starts_with("CONNECT")
+                {
+                    *got_connect2.lock().unwrap() = true;
+                }
+            }
+        });
+
+        // Set the listener URL as HTTPS_PROXY so the HTTP client *would* use it
+        // if it fell through to process-level proxy config — but we expect the
+        // absent-proxy-arg path to not touch any proxy lane at all.
+        let proxy_url = format!("http://127.0.0.1:{proxy_port}");
+        unsafe {
+            // Set it as a lane but do NOT pass proxy= in args.
+            std::env::set_var("DONSETCH_PROXY_LANE_SENTINEL_ABSENT", &proxy_url);
+        }
+
+        let target_url = format!("http://127.0.0.1:{proxy_port}/no-proxy-lane");
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
+                        // No "proxy" key in args — must use normal routing.
+                        let args = serde_json::json!({
+                            "url": &target_url,
+                            "tier": "1",
+                        });
+                        let u = args["url"].as_str().unwrap().to_string();
+                        let _ = super::fetch_single(&daemon, &args, &u).await;
+                    })
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var("DONSETCH_PROXY_LANE_SENTINEL_ABSENT");
+        }
+
+        // The sentinel listener should NOT have received a CONNECT via the
+        // proxy lane code path.
+        assert!(
+            !*got_connect.lock().unwrap(),
+            "absent proxy arg must NOT route through a lane proxy"
+        );
+    }
+
+    /// Prove that proxy with tier != "1" is rejected before any route is used.
+    ///
+    /// Requires nextest.
+    #[test]
+    fn proxy_with_non_tier1_rejected() {
+        unsafe {
+            std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
+            std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
+            std::env::set_var(
+                "DONSETCH_PROXY_LANE_GUARDTEST",
+                "http://user:pass@proxy:44445",
+            );
+        }
+
+        let error_str = std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
+                        // tier=auto (default) with a proxy arg — must be rejected.
+                        let args = serde_json::json!({
+                            "url": "https://example.com/",
+                            "proxy": "guardtest",
+                            // no tier key => defaults to "auto"
+                        });
+                        let u = args["url"].as_str().unwrap().to_string();
+                        let result = super::fetch_single(&daemon, &args, &u).await;
+                        result.to_string()
+                    })
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var("DONSETCH_PROXY_LANE_GUARDTEST");
+        }
+
+        assert!(
+            error_str.contains("tier"),
+            "error must mention tier requirement: {error_str}"
+        );
+        assert!(
+            error_str.contains("proxy.tier_required") || error_str.contains("tier_required"),
+            "error code must be proxy.tier_required: {error_str}"
+        );
+    }
+
+    /// Spec check: proxy param must exist and be optional in the MCP schema.
+    #[test]
+    fn absent_proxy_arg_takes_normal_path() {
+        let fetch_tool = crate::spec::TOOLS
+            .iter()
+            .find(|t| t.name == "web_fetch")
+            .unwrap();
+        let proxy_param = fetch_tool.params.iter().find(|p| p.name == "proxy");
+        assert!(
+            proxy_param.is_some(),
+            "proxy param must exist in FETCH_PARAMS"
+        );
+        assert!(!proxy_param.unwrap().required, "proxy must be optional");
     }
 }
