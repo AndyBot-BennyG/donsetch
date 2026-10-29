@@ -19,11 +19,6 @@ yanked = "warn"
 ignore = [
     "RUSTSEC-2024-0436", # paste
     "RUSTSEC-2026-0192", # ttf-parser
-    # Pre-existing on master (88c2503); not introduced by this PR.
-    # tokio AsyncFd::new I/O safety issue — patched in tokio >=1.51.6 or >=1.53.3.
-    # Upstream donsetch must bump the tokio dep; acknowledged here as unblocking
-    # CI while the fix lands upstream.
-    "RUSTSEC-2026-0386", # tokio AsyncFd
 ]
 
 [licenses]

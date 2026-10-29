@@ -1153,7 +1153,7 @@ pub(super) async fn fetch_single(daemon: &Arc<Daemon>, args: &Value, url: &str) 
             let requested_tier = args.get("tier").and_then(Value::as_str).unwrap_or("auto");
             if requested_tier != "1" {
                 return tool_error_structured(
-                    "proxy lane requires tier="1"; set tier="1" to use a named proxy lane                      (auto and tier=2 may launch a browser that cannot ride a lane)",
+                    "proxy lane requires tier=\"1\"; set tier=\"1\" to use a named proxy lane (auto and tier=2 may launch a browser that cannot ride a lane)",
                     "proxy.tier_required",
                     None,
                 );
