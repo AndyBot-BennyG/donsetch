@@ -1089,6 +1089,36 @@ fn fetch_read_options(args: &Value) -> Result<ExtractOptions, Value> {
     Ok(opts)
 }
 
+/// Fill a buffer with cryptographically random bytes for session ID generation.
+fn fill_random_bytes(buf: &mut [u8]) -> Result<(), ()> {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(buf))
+        .map_err(|_| ())
+}
+
+/// Substitute `{session}` in a proxy URL with a fresh random 12-hex string.
+///
+/// If the placeholder is absent, the URL is returned unchanged.
+/// Each call produces a different value so each request gets a fresh exit IP
+/// (Bright Data: `user-session-{session}`).
+fn substitute_session(raw: &str) -> String {
+    if !raw.contains("{session}") {
+        return raw.to_owned();
+    }
+    let mut rng = [0u8; 6]; // 6 bytes = 12 hex chars
+    if fill_random_bytes(&mut rng).is_ok() {
+        use std::fmt::Write as _;
+        let mut session_id = String::with_capacity(12);
+        for b in &rng {
+            let _ = write!(session_id, "{b:02x}");
+        }
+        raw.replace("{session}", &session_id)
+    } else {
+        raw.to_owned()
+    }
+}
+
 /// Fetch one live URL on a route selected once for the whole call.
 pub(super) async fn fetch_single(daemon: &Arc<Daemon>, args: &Value, url: &str) -> Value {
     let parsed_url = match fetch_input(args, url) {
@@ -1113,7 +1143,67 @@ pub(super) async fn fetch_single(daemon: &Arc<Daemon>, args: &Value, url: &str) 
         let caps = crate::persona::PersonaCaps::from_profile(daemon.fetcher.profile());
         state.ensure_persona(host, &caps);
         state.ensure_persona_egress(host);
-        daemon.fetcher.route_for_fetch(url)
+        // `proxy` arg: select a named service-side proxy lane.
+        // Credentials never pass through the MCP call, logs, traces, or errors.
+        if let Some(lane_name) = args.get("proxy").and_then(Value::as_str) {
+            let lane_name_lc = lane_name.to_ascii_lowercase();
+            // Validate name: [a-z0-9_]+ only.
+            if lane_name_lc.is_empty()
+                || !lane_name_lc
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
+                let lanes = crate::config::proxy_lanes();
+                let mut names: Vec<&str> = lanes.keys().map(String::as_str).collect();
+                names.sort();
+                return tool_error_structured(
+                    &format!(
+                        "proxy lane name {lane_name:?} contains invalid characters                          (allowed: [a-z0-9_]); configured lanes: {}",
+                        if names.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            names.join(", ")
+                        }
+                    ),
+                    "proxy.invalid_name",
+                    None,
+                );
+            }
+            let lanes = crate::config::proxy_lanes();
+            let Some(raw_url) = lanes.get(&lane_name_lc).cloned() else {
+                let mut names: Vec<&str> = lanes.keys().map(String::as_str).collect();
+                names.sort();
+                return tool_error_structured(
+                    &format!(
+                        "proxy lane {lane_name:?} is not configured; configured lanes: {}",
+                        if names.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            names.join(", ")
+                        }
+                    ),
+                    "proxy.unknown_lane",
+                    None,
+                );
+            };
+            // Substitute {session}: each call gets a fresh exit IP.
+            let resolved_url = substitute_session(&raw_url);
+            // Parse the proxy URL. On failure: error WITHOUT echoing the value.
+            match crate::transport::proxy::Proxy::parse(&resolved_url) {
+                Ok(proxy) => RequestRoute::pinned(proxy),
+                Err(_) => {
+                    return tool_error_structured(
+                        &format!(
+                            "proxy lane {lane_name:?} is misconfigured                              (value failed to parse as a proxy URL)"
+                        ),
+                        "proxy.misconfigured",
+                        None,
+                    );
+                }
+            }
+        } else {
+            daemon.fetcher.route_for_fetch(url)
+        }
     };
     let call = FetchCall {
         route,
@@ -2033,60 +2123,60 @@ async fn fetch_single_inner(
             raw_html = Some(crate::extract::charset::decode(&o.body, &ct));
             final_url = o.url.clone();
         } else {
-        match extract::extract_off_worker(&o.body, &ct, &o.url, &opts).await {
-            Ok(e) => {
-                final_url = o.url.clone();
-                final_ex = Some(e);
-            }
-            Err(extract::ExtractError::Wall(v)) => {
-                extraction_wall = Some(v);
-                final_verdict = format!("{v:?}");
-                if tier == "1" {
+            match extract::extract_off_worker(&o.body, &ct, &o.url, &opts).await {
+                Ok(e) => {
+                    final_url = o.url.clone();
+                    final_ex = Some(e);
+                }
+                Err(extract::ExtractError::Wall(v)) => {
+                    extraction_wall = Some(v);
+                    final_verdict = format!("{v:?}");
+                    if tier == "1" {
+                        return tool_error_structured(
+                            format!("access wall at {url}: {v:?}"),
+                            "walled",
+                            Some(json!({
+                                "url": url, "status": final_status, "verdict": final_verdict,
+                                "next_action": if matches!(v, Verdict::Challenge(_)) {
+                                    "browser escalation disabled by tier=1; retry with tier=2 or tier=auto".to_string()
+                                } else { next_action_for(Some(v), final_status, "walled") }, "escalation": trace.value(),
+                            })),
+                        );
+                    }
+                }
+                Err(extract::ExtractError::SelectorNoMatch {
+                    selector,
+                    inspected,
+                }) => {
                     return tool_error_structured(
-                        format!("access wall at {url}: {v:?}"),
-                        "walled",
+                        format!("CSS selector {selector:?} matched no elements"),
+                        "permanent",
+                        Some(
+                            json!({"url": orig_url, "code": "selector.nomatch", "elements_inspected": inspected,
+                        "next_action": "correct the selector, or omit it to read the page"}),
+                        ),
+                    );
+                }
+                Err(extract::ExtractError::BadSelector(selector)) => {
+                    return tool_error_structured(
+                        format!("invalid CSS selector: {selector}"),
+                        "permanent",
+                        Some(
+                            json!({"url": orig_url, "code": "selector.invalid", "next_action": "correct the CSS selector syntax"}),
+                        ),
+                    );
+                }
+                Err(e) => {
+                    return tool_error_structured(
+                        format!("content extraction failed: {e}"),
+                        "transient",
                         Some(json!({
-                            "url": url, "status": final_status, "verdict": final_verdict,
-                            "next_action": if matches!(v, Verdict::Challenge(_)) {
-                                "browser escalation disabled by tier=1; retry with tier=2 or tier=auto".to_string()
-                            } else { next_action_for(Some(v), final_status, "walled") }, "escalation": trace.value(),
+                            "url": url,
+                            "next_action": "retry with a narrow selector= or focus=; if the page is JS-heavy, tier=2 renders it in a browser",
                         })),
                     );
                 }
             }
-            Err(extract::ExtractError::SelectorNoMatch {
-                selector,
-                inspected,
-            }) => {
-                return tool_error_structured(
-                    format!("CSS selector {selector:?} matched no elements"),
-                    "permanent",
-                    Some(
-                        json!({"url": orig_url, "code": "selector.nomatch", "elements_inspected": inspected,
-                        "next_action": "correct the selector, or omit it to read the page"}),
-                    ),
-                );
-            }
-            Err(extract::ExtractError::BadSelector(selector)) => {
-                return tool_error_structured(
-                    format!("invalid CSS selector: {selector}"),
-                    "permanent",
-                    Some(
-                        json!({"url": orig_url, "code": "selector.invalid", "next_action": "correct the CSS selector syntax"}),
-                    ),
-                );
-            }
-            Err(e) => {
-                return tool_error_structured(
-                    format!("content extraction failed: {e}"),
-                    "transient",
-                    Some(json!({
-                        "url": url,
-                        "next_action": "retry with a narrow selector= or focus=; if the page is JS-heavy, tier=2 renders it in a browser",
-                    })),
-                );
-            }
-        }
         } // else (want_raw) block
     }
 
@@ -4952,8 +5042,7 @@ mod raw_passthrough_tests {
         let schema = spec::mcp_schema(tool);
         let props = &schema["inputSchema"]["properties"];
         assert_eq!(
-            props["raw"]["type"],
-            "boolean",
+            props["raw"]["type"], "boolean",
             "raw must be a boolean in the MCP schema"
         );
         // raw is optional: it must NOT be in the required array.
@@ -4999,7 +5088,10 @@ mod raw_passthrough_tests {
             .try_get_matches_from(["fetch", "https://example.com", "--raw"])
             .expect("--raw must be accepted by the CLI");
         let args = spec::matches_to_json(tool, &matches_with);
-        assert_eq!(args["raw"], true, "--raw must produce raw: true in the args");
+        assert_eq!(
+            args["raw"], true,
+            "--raw must produce raw: true in the args"
+        );
 
         let matches_without = spec::cli_command(tool)
             .try_get_matches_from(["fetch", "https://example.com"])
@@ -5022,7 +5114,10 @@ mod raw_passthrough_tests {
 
     /// Minimal HTTP/1.1 server: accepts connections, serves a fixed response
     /// body, then closes each connection.
-    fn one_shot_server(body: &'static str, content_type: &'static str) -> (String, std::net::TcpListener) {
+    fn one_shot_server(
+        body: &'static str,
+        content_type: &'static str,
+    ) -> (String, std::net::TcpListener) {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
@@ -5059,7 +5154,8 @@ mod raw_passthrough_tests {
             std::env::set_var("DONSETCH_ALLOW_PRIVATE_EGRESS", "1");
             std::env::set_var("DONSETCH_NO_CONFIG_FILE", "1");
         }
-        const HTML: &str = "<html><head><title>T</title></head><body><p>Hello raw world</p></body></html>";
+        const HTML: &str =
+            "<html><head><title>T</title></head><body><p>Hello raw world</p></body></html>";
         let (url, _listener) = one_shot_server(HTML, "text/html; charset=utf-8");
 
         std::thread::Builder::new()
@@ -5070,9 +5166,8 @@ mod raw_passthrough_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         let args = serde_json::json!({
                             "url": url,
                             "raw": true,
@@ -5154,9 +5249,8 @@ mod raw_passthrough_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         let args = serde_json::json!({
                             "url": url,
                             "tier": "1",
@@ -5245,9 +5339,8 @@ mod raw_passthrough_tests {
                     .build()
                     .unwrap()
                     .block_on(async move {
-                        let daemon = std::sync::Arc::new(
-                            super::Daemon::new().await.expect("daemon init"),
-                        );
+                        let daemon =
+                            std::sync::Arc::new(super::Daemon::new().await.expect("daemon init"));
                         let args = serde_json::json!({
                             "url": url,
                             "raw": true,
@@ -5284,10 +5377,7 @@ mod raw_passthrough_tests {
                         );
 
                         // status must be 200 (the mock returns 200).
-                        assert_eq!(
-                            sc["status"], 200,
-                            "structuredContent.status must be 200"
-                        );
+                        assert_eq!(sc["status"], 200, "structuredContent.status must be 200");
 
                         // url must be non-empty.
                         assert!(
@@ -6405,5 +6495,111 @@ mod rules_tests {
                 .any(|c| c.name == "xs" && c.value == "bbbb"),
             "session rotation was missed because size and timestamp matched"
         );
+    }
+}
+
+#[cfg(test)]
+mod proxy_lane_unit_tests {
+    use super::{fill_random_bytes, substitute_session};
+
+    #[test]
+    fn session_placeholder_replaced() {
+        let raw = "http://user:pass@brd.superproxy.io:44445?session={session}";
+        let result = substitute_session(raw);
+        assert!(
+            !result.contains("{session}"),
+            "placeholder must be replaced: {result}"
+        );
+        assert!(result.starts_with("http://user:pass@brd.superproxy.io:44445"));
+    }
+
+    #[test]
+    fn session_placeholder_gives_different_values_per_call() {
+        let raw = "http://user-session-{session}:pass@brd.superproxy.io:44445";
+        let a = substitute_session(raw);
+        let b = substitute_session(raw);
+        // With overwhelming probability two random 6-byte values differ.
+        assert_ne!(a, b, "consecutive session substitutions must differ");
+    }
+
+    #[test]
+    fn no_placeholder_unchanged() {
+        let raw = "http://user:pass@proxy:44445";
+        assert_eq!(substitute_session(raw), raw);
+    }
+
+    #[test]
+    fn fill_random_bytes_fills_buffer() {
+        let mut buf = [0u8; 6];
+        fill_random_bytes(&mut buf).unwrap();
+        // With overwhelming probability at least one byte is nonzero.
+        assert_ne!(buf, [0u8; 6], "random bytes must not all be zero");
+    }
+
+    #[test]
+    fn unknown_lane_error_does_not_echo_credential() {
+        // Verify the error message format for an unknown lane does not
+        // contain the proxy URL value (which may carry credentials).
+        unsafe {
+            std::env::set_var(
+                "DONSETCH_PROXY_LANE_CREDTEST_UNIT",
+                "http://SENTINEL_CRED@proxy:8888",
+            );
+        }
+        let lanes = crate::config::proxy_lanes();
+        let mut names: Vec<&str> = lanes.keys().map(String::as_str).collect();
+        names.sort();
+        let error_msg = format!(
+            "proxy lane {:?} is not configured; configured lanes: {}",
+            "nonexistent_xyzzy",
+            if names.is_empty() {
+                "(none)".to_string()
+            } else {
+                names.join(", ")
+            }
+        );
+        assert!(
+            !error_msg.contains("SENTINEL_CRED"),
+            "error must not contain credential: {error_msg}"
+        );
+        assert!(
+            !error_msg.contains("proxy:8888"),
+            "error must not contain proxy URL: {error_msg}"
+        );
+        // Should list the lane name(s) not values
+        assert!(
+            error_msg.contains("credtest_unit") || names.is_empty(),
+            "error must list lane names: {error_msg}"
+        );
+        unsafe {
+            std::env::remove_var("DONSETCH_PROXY_LANE_CREDTEST_UNIT");
+        }
+    }
+
+    #[test]
+    fn misconfigured_lane_error_does_not_echo_value() {
+        // The error for a bad proxy URL must name the lane, not echo the value.
+        let lane_name = "badlane";
+        let error_msg = format!(
+            "proxy lane {lane_name:?} is misconfigured (value failed to parse as a proxy URL)"
+        );
+        assert!(error_msg.contains("badlane"), "{error_msg}");
+        // Must not contain a URL scheme (which would come from the value)
+        assert!(!error_msg.contains("://"), "no URL in error: {error_msg}");
+    }
+
+    #[test]
+    fn absent_proxy_arg_takes_normal_path() {
+        // When proxy is absent from args, the param is optional.
+        let fetch_tool = crate::spec::TOOLS
+            .iter()
+            .find(|t| t.name == "web_fetch")
+            .unwrap();
+        let proxy_param = fetch_tool.params.iter().find(|p| p.name == "proxy");
+        assert!(
+            proxy_param.is_some(),
+            "proxy param must exist in FETCH_PARAMS"
+        );
+        assert!(!proxy_param.unwrap().required, "proxy must be optional");
     }
 }

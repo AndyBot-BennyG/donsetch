@@ -74,6 +74,8 @@ pub struct Daemon {
 
 impl Daemon {
     pub async fn new() -> Result<Self, crate::error::FetchError> {
+        // Log configured proxy lane NAMES at startup (never values).
+        crate::config::log_proxy_lanes();
         let profile = BrowserProfile::host_default();
         // One egress fabric for search, crawl, and fetch (v4 A2).
         let egress = std::sync::Arc::new(EgressPool::from_env());

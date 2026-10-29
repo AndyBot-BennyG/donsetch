@@ -2784,6 +2784,42 @@ pub fn cfg() -> &'static DonsetchConfig {
     &installed().config
 }
 
+/// Read the named proxy lanes from environment variables.
+///
+/// Each `DONSETCH_PROXY_LANE_<NAME>` env var defines one lane;
+/// names are normalized to lowercase. Names must match `[a-z0-9_]+`.
+/// Returns a map of `lowercase_name -> raw_url_string`.
+///
+/// Lane values are NEVER logged; only lane names are.
+pub fn proxy_lanes() -> std::collections::HashMap<String, String> {
+    const PREFIX: &str = "DONSETCH_PROXY_LANE_";
+    let mut lanes = std::collections::HashMap::new();
+    for (key, value) in std::env::vars() {
+        let Some(suffix) = key.strip_prefix(PREFIX) else {
+            continue;
+        };
+        if suffix.is_empty() {
+            continue;
+        }
+        let name = suffix.to_ascii_lowercase();
+        // Require [a-z0-9_]+ after lowercasing.
+        if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            lanes.insert(name, value);
+        }
+    }
+    lanes
+}
+
+/// Log the configured proxy lane NAMES (never values) to stderr at startup.
+pub fn log_proxy_lanes() {
+    let lanes = proxy_lanes();
+    if !lanes.is_empty() {
+        let mut names: Vec<&str> = lanes.keys().map(String::as_str).collect();
+        names.sort();
+        crate::diag!("[donsetch] proxy lanes configured: {}", names.join(", "));
+    }
+}
+
 /// The installed layer supplying the default MCP output mode.
 pub(crate) fn mcp_text_only_source() -> &'static str {
     installed()
@@ -4630,5 +4666,67 @@ mod tests {
         );
         assert_eq!(std::fs::read(&p).unwrap(), b"new");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod proxy_lane_tests {
+    use super::proxy_lanes;
+
+    #[test]
+    fn reads_env_var_and_lowercases_name() {
+        unsafe {
+            std::env::set_var("DONSETCH_PROXY_LANE_TESTUNIT_A", "http://proxy:8080");
+        }
+        let lanes = proxy_lanes();
+        assert_eq!(
+            lanes.get("testunit_a"),
+            Some(&"http://proxy:8080".to_string())
+        );
+        unsafe {
+            std::env::remove_var("DONSETCH_PROXY_LANE_TESTUNIT_A");
+        }
+    }
+
+    #[test]
+    fn filters_names_with_invalid_chars() {
+        unsafe {
+            std::env::set_var("DONSETCH_PROXY_LANE_BAD-LANE", "http://proxy:7070");
+        }
+        let lanes = proxy_lanes();
+        // Hyphen in suffix => name "bad-lane" fails [a-z0-9_]+ check => excluded
+        assert!(
+            !lanes.contains_key("bad-lane"),
+            "hyphen in name must be excluded"
+        );
+        unsafe {
+            std::env::remove_var("DONSETCH_PROXY_LANE_BAD-LANE");
+        }
+    }
+
+    #[test]
+    fn log_line_does_not_contain_values() {
+        // Verify the log message format contains only names, not values.
+        unsafe {
+            std::env::set_var(
+                "DONSETCH_PROXY_LANE_NOECHO_UNIT",
+                "http://SECRET@proxy:9999",
+            );
+        }
+        let lanes = proxy_lanes();
+        let mut names: Vec<&str> = lanes.keys().map(String::as_str).collect();
+        names.sort();
+        let log_line = format!("[donsetch] proxy lanes configured: {}", names.join(", "));
+        assert!(
+            !log_line.contains("SECRET"),
+            "log must not contain credential: {log_line}"
+        );
+        assert!(
+            !log_line.contains("proxy:9999"),
+            "log must not contain proxy URL"
+        );
+        unsafe {
+            std::env::remove_var("DONSETCH_PROXY_LANE_NOECHO_UNIT");
+        }
     }
 }

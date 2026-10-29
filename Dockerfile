@@ -141,6 +141,35 @@ RUN if [ "$INSTALL_CHROME" = "true" ]; then \
         rm -rf /var/lib/apt/lists/*; \
     fi
 
+# ── Optional extra CA certificates (e.g. Bright Data residential proxy CA) ───
+#
+# Bright Data's residential proxy (port 44445) re-terminates TLS with its own
+# CA. Tier-1 requests through that lane fail with a TLS error unless the image
+# trusts this CA. This is an opt-in, operator-supplied configuration:
+#
+#   1. Obtain the public Bright Data Root CA certificate (NOT the legacy CA):
+#        https://brightdata.com/static/brightdata_proxy_ca.zip
+#        Extract: brightdata_root_ca_44445.crt  (CN "Bright Data Root CA", valid to 2046)
+#        Do NOT use port 33335 or 22225 (legacy CA, expired 2026-09-25).
+#   2. Drop the .crt file(s) into the certs/ directory next to this Dockerfile.
+#        Do NOT commit any .crt files — they are gitignored.
+#   3. Build:  docker build --build-arg EXTRA_CA_CERTS=true -t donsetch-mcp .
+#
+# Default (false): no extra certificates; TLS behavior unchanged.
+# Do NOT add any option to disable TLS verification — use this instead.
+#
+# Example DONSETCH_PROXY_LANE_RESIDENTIAL lane (port 44445, requires this CA):
+#   DONSETCH_PROXY_LANE_RESIDENTIAL=http://<user>-session-{session}:<pass>@brd.superproxy.io:44445
+ARG EXTRA_CA_CERTS=false
+COPY certs/ /tmp/extra-certs/
+RUN if [ "$EXTRA_CA_CERTS" = "true" ] && ls /tmp/extra-certs/*.crt >/dev/null 2>&1; then \
+        install -d /usr/local/share/ca-certificates/donsetch-extra && \
+        cp /tmp/extra-certs/*.crt /usr/local/share/ca-certificates/donsetch-extra/ && \
+        update-ca-certificates && \
+        echo "[donsetch] extra CA certificates installed."; \
+    fi && \
+    rm -rf /tmp/extra-certs
+
 # Copy binary from builder
 COPY --from=builder /build/target/release/donsetch /usr/local/bin/donsetch
 

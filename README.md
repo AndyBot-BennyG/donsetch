@@ -753,6 +753,41 @@ Set the environment and every fetch follows the curl convention:
 - In an intercepting network (a TLS-terminating middlebox), HTTP CONNECT gets an interception-safe handshake (no GREASE/ALPS/ECH/compress-cert, which some middleboxes reset on) and `SSL_CERT_FILE` / `SSL_CERT_DIR` load into the trust store, exactly like curl. SOCKS5 keeps the Chrome-true handshake with TLS end to end. `donsetch doctor` reports the whole posture and names the interception fix when a live check fails.
 - Authenticated lanes work in the browser tier too: Chrome cannot carry proxy credentials, so it is pointed at a local credential-free relay that authenticates upstream, instead of dying as `ERR_SOCKS_CONNECTION_FAILED`.
 
+### Per-request proxy lanes (MCP)
+
+Named proxy lanes let a caller select a specific service-side proxy on a per-request basis without passing credentials through the MCP call.
+
+Configure lanes as environment variables at deploy time:
+
+```env
+DONSETCH_PROXY_LANE_RESIDENTIAL=http://<user>-session-{session}:<pass>@brd.superproxy.io:44445
+```
+
+Then pass the lane name in the `web_fetch` call:
+
+```json
+{"url": "https://example.com", "tier": "1", "proxy": "residential"}
+```
+
+Rules:
+- **Names**: case-insensitive, `[a-z0-9_]+` only. Names are logged at startup; values are never logged.
+- **`{session}` placeholder**: replaced with a fresh random 12-hex string per call so each request exits from a different IP (Bright Data: `user-session-{session}`).
+- **Absent `proxy`**: behavior unchanged — route follows the normal pool/direct path.
+- **Unknown lane**: tool error naming the lane and listing configured lane names. Never falls back silently.
+- **Misconfigured lane**: tool error without echoing the value.
+- **Use `tier=1`** with a proxy lane. `tier=auto` may escalate to a browser which cannot ride a named lane.
+- Credentials stay on the server; they never appear in MCP calls, errors, traces, or receipts.
+
+**Bright Data residential (port 44445) and TLS:**
+
+Bright Data's residential proxy (port 44445) re-terminates TLS with its own CA. Tier-1 requests through it fail with a TLS certificate error unless the image trusts this CA. This is opt-in:
+
+1. Download the public CA: <https://brightdata.com/static/brightdata_proxy_ca.zip>, extract `brightdata_root_ca_44445.crt` (CN "Bright Data Root CA", valid to 2046).
+2. Drop the `.crt` file in `certs/` next to the Dockerfile (gitignored; do not commit it).
+3. Build: `docker build --build-arg EXTRA_CA_CERTS=true -t donsetch-mcp .`
+
+> **Note:** Do not use port 33335 or 22225 — the legacy CA expired 2026-09-25. Only port 44445 with the new CA works. TLS verification is never disabled; the CA must be trusted explicitly.
+
 ## 🔐 Logged-in sessions
 
 Pages behind a login (x.com, gated docs, internal tools) need a real session. `donsetch login` gives you one without ever seeing your credentials:
