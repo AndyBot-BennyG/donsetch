@@ -6806,10 +6806,10 @@ mod proxy_lane_unit_tests {
         std::thread::spawn(move || {
             if let Ok((mut s, _)) = listener.accept() {
                 let mut buf = [0u8; 4096];
-                if let Ok(n) = s.read(&mut buf) {
-                    if std::str::from_utf8(&buf[..n]).unwrap_or("").starts_with("CONNECT") {
-                        *got_connect2.lock().unwrap() = true;
-                    }
+                if let Ok(n) = s.read(&mut buf)
+                    && std::str::from_utf8(&buf[..n]).unwrap_or("").starts_with("CONNECT")
+                {
+                    *got_connect2.lock().unwrap() = true;
                 }
             }
         });
