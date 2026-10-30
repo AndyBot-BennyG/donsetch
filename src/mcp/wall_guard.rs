@@ -53,8 +53,6 @@ pub struct WallGuardConfig {
     pub evict_grace_secs: u64,
     /// DONSETCH_EVICT_MIN_UPTIME_SECS: minimum uptime before eviction (default 0)
     pub evict_min_uptime_secs: u64,
-    /// DONSETCH_EVICT_RECENT_OK_SECS: not used directly (default 120); see wall_guard.rs
-    pub evict_recent_ok_secs: u64,
 }
 
 impl WallGuardConfig {
@@ -85,22 +83,16 @@ impl WallGuardConfig {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
 
-        let evict_recent_ok_secs = std::env::var("DONSETCH_EVICT_RECENT_OK_SECS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(120);
-
         Self {
             evict_after_walls,
             evict_hosts,
             evict_grace_secs,
             evict_min_uptime_secs,
-            evict_recent_ok_secs,
         }
     }
 
     /// Feature is OFF unless both evict_after_walls is Some AND evict_hosts is non-empty.
-    fn is_enabled(&self) -> bool {
+    pub fn is_enabled(&self) -> bool {
         self.evict_after_walls.is_some() && !self.evict_hosts.is_empty()
     }
 }
@@ -213,7 +205,6 @@ impl WallGuard {
                 evict_hosts: HashSet::new(),
                 evict_grace_secs: 30,
                 evict_min_uptime_secs: 0,
-                evict_recent_ok_secs: 120,
             },
             burned: AtomicBool::new(false),
             state: Mutex::new(WallGuardState {
@@ -259,7 +250,9 @@ impl WallGuard {
             }
             Outcome::WallBlocking => {
                 state.total_walls += 1;
-                let entry = state.host_streaks.get_or_insert(host.clone(), || HostStreak::new());
+                let entry = state
+                    .host_streaks
+                    .get_or_insert(host.clone(), || HostStreak::new());
                 let norm_url = normalise_url(url);
 
                 if entry.seen_urls_in_streak.contains(&norm_url) {
@@ -275,7 +268,8 @@ impl WallGuard {
                     if let Some(n) = self.config.evict_after_walls {
                         if entry.streak >= n {
                             // Check min uptime
-                            if self.started_at.elapsed().as_secs() >= self.config.evict_min_uptime_secs
+                            if self.started_at.elapsed().as_secs()
+                                >= self.config.evict_min_uptime_secs
                             {
                                 // LATCH
                                 self.burned.store(true, Ordering::SeqCst);
@@ -330,7 +324,6 @@ mod tests {
             evict_hosts: hosts.iter().map(|h| h.to_string()).collect(),
             evict_grace_secs: 30,
             evict_min_uptime_secs: 0,
-            evict_recent_ok_secs: 120,
         }
     }
 
@@ -418,7 +411,6 @@ mod tests {
             evict_hosts: HashSet::new(),
             evict_grace_secs: 30,
             evict_min_uptime_secs: 0,
-            evict_recent_ok_secs: 120,
         };
         let guard = WallGuard::new(config, notify);
 
@@ -435,10 +427,7 @@ mod tests {
 
         // box.live is not in protected hosts
         for _ in 0..10 {
-            assert!(!guard.record_outcome(
-                "https://box.live/page1",
-                Outcome::WallBlocking
-            ));
+            assert!(!guard.record_outcome("https://box.live/page1", Outcome::WallBlocking));
         }
         assert!(!guard.is_burned());
     }
@@ -448,14 +437,8 @@ mod tests {
         let notify = Arc::new(tokio::sync::Notify::new());
         let guard = WallGuard::new(config_with_walls(2, &["tapology.com"]), notify);
 
-        assert!(!guard.record_outcome(
-            "https://tapology.com/events/page1",
-            Outcome::WallBlocking
-        ));
-        assert!(guard.record_outcome(
-            "https://tapology.com/events/page2",
-            Outcome::WallBlocking
-        ));
+        assert!(!guard.record_outcome("https://tapology.com/events/page1", Outcome::WallBlocking));
+        assert!(guard.record_outcome("https://tapology.com/events/page2", Outcome::WallBlocking));
         assert!(guard.is_burned());
     }
 
@@ -466,14 +449,8 @@ mod tests {
         let guard = WallGuard::new(config_with_walls(3, &["example.com"]), notify);
 
         assert!(!guard.record_outcome("https://example.com/page1", Outcome::WallBlocking));
-        assert!(!guard.record_outcome(
-            "https://other.com/page1",
-            Outcome::WallBlocking
-        ));
-        assert!(!guard.record_outcome(
-            "https://other.com/page2",
-            Outcome::WallBlocking
-        ));
+        assert!(!guard.record_outcome("https://other.com/page1", Outcome::WallBlocking));
+        assert!(!guard.record_outcome("https://other.com/page2", Outcome::WallBlocking));
 
         // other.com walls don't affect example.com (and example.com is not in evict_hosts anyway)
         assert!(!guard.is_burned());
@@ -627,14 +604,10 @@ mod tests {
     fn test_mutation_g_feature_on_unset() {
         // Mutation (g): feature ON when env var unset
         // This test would fail if mutation applied: disabled would latch
-        let notify = Arc::new(tokio::sync::Notify::new());
         let guard = WallGuard::disabled();
 
         for _ in 0..100 {
-            assert!(!guard.record_outcome(
-                "https://example.com/page",
-                Outcome::WallBlocking
-            ));
+            assert!(!guard.record_outcome("https://example.com/page", Outcome::WallBlocking));
         }
         assert!(!guard.is_burned());
     }
@@ -676,10 +649,9 @@ mod tests {
         let guard = WallGuard::new(config_with_walls(1, &["example.com"]), notify);
 
         for i in 0..10 {
-            assert!(!guard.record_outcome(
-                &format!("https://example.com/page{}", i),
-                Outcome::Neutral
-            ));
+            assert!(
+                !guard.record_outcome(&format!("https://example.com/page{}", i), Outcome::Neutral)
+            );
         }
         assert!(!guard.is_burned());
     }

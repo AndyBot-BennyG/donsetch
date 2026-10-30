@@ -57,7 +57,7 @@ use tower_http::{
 };
 
 use crate::mcp::server::{CancelMap, Daemon, cancel_key, handle};
-use crate::mcp::wall_guard::{WallGuard, WallGuardConfig, Outcome};
+use crate::mcp::wall_guard::{Outcome, WallGuard, WallGuardConfig};
 
 /// Idle sessions are dropped after this long, so cancelled-tool
 /// registries cannot leak forever for clients that vanish mid-call.
@@ -147,10 +147,7 @@ pub async fn run(host: String, port: u16) -> Result<(), Box<dyn std::error::Erro
 
     let app = Router::new()
         .route("/health", get(health_handler))
-        .route(
-            "/ready",
-            get(ready_handler),
-        )
+        .route("/ready", get(ready_handler))
         .route(
             "/mcp",
             post(mcp_handler).get(sse_handler).delete(delete_handler),
@@ -216,9 +213,7 @@ async fn health_handler() -> impl IntoResponse {
 }
 
 /// Readiness probe: returns 503 when instance is burned.
-async fn ready_handler(
-    State(state): State<HttpState>,
-) -> impl IntoResponse {
+async fn ready_handler(State(state): State<HttpState>) -> impl IntoResponse {
     let status = state.wall_guard.ready_status();
     if status.burned {
         (
@@ -230,10 +225,7 @@ async fn ready_handler(
             })),
         )
     } else {
-        (
-            StatusCode::OK,
-            Json(json!({"status": "ready"})),
-        )
+        (StatusCode::OK, Json(json!({"status": "ready"})))
     }
 }
 
@@ -587,44 +579,67 @@ fn extract_web_fetch_info(req: &Value) -> Option<(String, String)> {
     if method != "tools/call" {
         return None;
     }
-    let tool_name = req.get("params")
+    let tool_name = req
+        .get("params")
         .and_then(|p| p.get("name"))
         .and_then(Value::as_str)?;
     if tool_name != "web_fetch" {
         return None;
     }
-    let url = req.get("params")
+    let url = req
+        .get("params")
         .and_then(|p| p.get("arguments"))
         .and_then(|a| a.get("url"))
         .and_then(Value::as_str)?;
     Some((tool_name.to_string(), url.to_string()))
 }
 
-/// Extract outcome from tool response.
+/// Extract outcome from a JSON-RPC tool-call response.
+///
+/// The production server wraps every tool result as:
+///   {"jsonrpc":"2.0","id":..,"result":{...}}
+///
+/// Failure shape (real capture):
+///   result.code = "network.dns" (or any wall/non-wall code)
+///   result.errorKind = "permanent"
+///   result.isError = false (always; tool errors are returned results, not throws)
+///   result.content = [{"type":"text","text":"[meta] ..."}]
+///
+/// Success shape (real capture):
+///   result._meta = {"com.donsetch/fetch-debug": {"elapsed_ms":113,"status":200,...}}
+///   result.content = [{"type":"text","text":"<html...>"}]
+///   (NO result.code, NO result.errorKind)
+///
+/// Rule:
+///   WallBlocking: result.code is wall.challenge, wall.challenge_unsolved, or wall.blocked
+///   Success:      result present, no result.code, result.isError is not true
+///   Neutral:      any other shape (other code, unknown envelope, unparseable)
 fn extract_outcome(resp_str: &str) -> Option<Outcome> {
     let resp: Value = serde_json::from_str(resp_str).ok()?;
-    
-    // Check for success: structuredContent.ok == true
-    if let Some(true) = resp.get("structuredContent")
-        .and_then(|s| s.get("ok"))
+
+    // Must be a JSON-RPC result envelope (not an error envelope)
+    let result = resp.get("result")?;
+
+    // Primary signal: result.code
+    if let Some(code) = result.get("code").and_then(Value::as_str) {
+        // Blocking walls trigger eviction
+        if code == "wall.challenge" || code == "wall.challenge_unsolved" || code == "wall.blocked" {
+            return Some(Outcome::WallBlocking);
+        }
+        // Any other code (network.dns, deadline.hit, wall.paywall, ...) is Neutral
+        return Some(Outcome::Neutral);
+    }
+
+    // No result.code and isError is not true => genuine success
+    let is_error = result
+        .get("isError")
         .and_then(Value::as_bool)
-    {
+        .unwrap_or(false);
+    if !is_error {
         return Some(Outcome::Success);
     }
-    
-    // Check for error code
-    let code = resp.get("structuredContent")
-        .and_then(|s| s.get("code"))
-        .and_then(Value::as_str)?;
-    
-    // Counted as WallBlocking
-    if code == "wall.challenge" 
-        || code == "wall.challenge_unsolved" 
-        || code == "wall.blocked" {
-        return Some(Outcome::WallBlocking);
-    }
-    
-    // Neutral
+
+    // isError=true with no code: treat as Neutral (should not happen in practice)
     Some(Outcome::Neutral)
 }
 
@@ -662,7 +677,7 @@ async fn mcp_handler(State(state): State<HttpState>, headers: HeaderMap, body: B
 
     // Track in-flight requests
     state.in_flight.fetch_add(1, AtomicOrdering::SeqCst);
-    
+
     // Ensure we always decrement on exit
     let _in_flight_guard = InFlightGuard {
         in_flight: Arc::clone(&state.in_flight),
@@ -746,14 +761,12 @@ async fn mcp_handler(State(state): State<HttpState>, headers: HeaderMap, body: B
                     if should_burn {
                         // Initiate drain + shutdown
                         let state_clone = state.clone();
-                        let resp_line_clone = resp_line.clone();
                         let wall_guard = Arc::clone(&state.wall_guard);
                         tokio::spawn(async move {
                             // Get uptime and streak count for logging
                             let status = wall_guard.ready_status();
-                            let deadline = tokio::time::sleep(Duration::from_secs(
-                                wall_guard.grace_secs()
-                            ));
+                            let deadline =
+                                tokio::time::sleep(Duration::from_secs(wall_guard.grace_secs()));
                             tokio::pin!(deadline);
                             loop {
                                 if state_clone.in_flight.load(AtomicOrdering::SeqCst) <= 1 {
@@ -1108,5 +1121,401 @@ mod tests {
         assert!(live.contains_key(""), "default registry is never evicted");
         assert!(!live.contains_key("s0000"), "oldest named entry evicted");
         assert!(live.contains_key(&format!("s{MAX_SESSIONS:04}")));
+    }
+
+    // ── Wall-guard extract_outcome tests ─────────────────────────────────────
+    //
+    // Real JSON-RPC response fixtures captured from the live production service.
+    // The previous implementation looked for structuredContent.ok / .code; the
+    // production server never emits structuredContent at the JSON-RPC envelope
+    // level — it appears only inside result.*. These tests pin the correct
+    // parsing path.
+
+    /// Production FAILURE fixture: result.code = "network.dns"
+    const FIXTURE_FAILURE_DNS: &str = r#"{"id":1,"jsonrpc":"2.0","result":{"code":"network.dns","content":[{"type":"text","text":"[meta]"}],"errorKind":"permanent","isError":false}}"#;
+    /// Production SUCCESS fixture: no result.code, has _meta fetch-debug
+    const FIXTURE_SUCCESS: &str = r#"{"id":1,"jsonrpc":"2.0","result":{"_meta":{"com.donsetch/fetch-debug":{"elapsed_ms":113,"raw":true,"status":200,"tier":"1"}},"content":[{"type":"text","text":"<html><body>content</body></html>"}]}}"#;
+    /// Wall blocking: wall.challenge
+    const FIXTURE_WALL_CHALLENGE: &str = r#"{"id":2,"jsonrpc":"2.0","result":{"code":"wall.challenge","content":[{"type":"text","text":"[meta]"}],"errorKind":"walled","isError":false}}"#;
+    /// Wall blocking: wall.challenge_unsolved
+    const FIXTURE_WALL_CHALLENGE_UNSOLVED: &str = r#"{"id":3,"jsonrpc":"2.0","result":{"code":"wall.challenge_unsolved","content":[{"type":"text","text":"[meta]"}],"errorKind":"walled","isError":false}}"#;
+    /// Wall blocking: wall.blocked
+    const FIXTURE_WALL_BLOCKED: &str = r#"{"id":4,"jsonrpc":"2.0","result":{"code":"wall.blocked","content":[{"type":"text","text":"[meta]"}],"errorKind":"walled","isError":false}}"#;
+    /// Neutral: wall.paywall
+    const FIXTURE_WALL_PAYWALL: &str = r#"{"id":5,"jsonrpc":"2.0","result":{"code":"wall.paywall","content":[{"type":"text","text":"[meta]"}],"errorKind":"walled","isError":false}}"#;
+    /// Neutral: wall.captcha
+    const FIXTURE_WALL_CAPTCHA: &str = r#"{"id":6,"jsonrpc":"2.0","result":{"code":"wall.captcha","content":[{"type":"text","text":"[meta]"}],"errorKind":"walled","isError":false}}"#;
+    /// Neutral: wall.auth
+    const FIXTURE_WALL_AUTH: &str = r#"{"id":7,"jsonrpc":"2.0","result":{"code":"wall.auth","content":[{"type":"text","text":"[meta]"}],"errorKind":"permanent","isError":false}}"#;
+    /// JSON-RPC error envelope (no "result" key)
+    const FIXTURE_JSONRPC_ERROR: &str =
+        r#"{"id":8,"jsonrpc":"2.0","error":{"code":-32603,"message":"internal error"}}"#;
+
+    #[test]
+    fn extract_outcome_failure_dns_is_neutral() {
+        assert_eq!(extract_outcome(FIXTURE_FAILURE_DNS), Some(Outcome::Neutral));
+    }
+
+    #[test]
+    fn extract_outcome_success_fixture_is_success() {
+        assert_eq!(extract_outcome(FIXTURE_SUCCESS), Some(Outcome::Success));
+    }
+
+    #[test]
+    fn extract_outcome_wall_challenge_is_blocking() {
+        assert_eq!(
+            extract_outcome(FIXTURE_WALL_CHALLENGE),
+            Some(Outcome::WallBlocking)
+        );
+    }
+
+    #[test]
+    fn extract_outcome_wall_challenge_unsolved_is_blocking() {
+        assert_eq!(
+            extract_outcome(FIXTURE_WALL_CHALLENGE_UNSOLVED),
+            Some(Outcome::WallBlocking)
+        );
+    }
+
+    #[test]
+    fn extract_outcome_wall_blocked_is_blocking() {
+        assert_eq!(
+            extract_outcome(FIXTURE_WALL_BLOCKED),
+            Some(Outcome::WallBlocking)
+        );
+    }
+
+    #[test]
+    fn extract_outcome_wall_paywall_is_neutral() {
+        assert_eq!(
+            extract_outcome(FIXTURE_WALL_PAYWALL),
+            Some(Outcome::Neutral)
+        );
+    }
+
+    #[test]
+    fn extract_outcome_wall_captcha_is_neutral() {
+        assert_eq!(
+            extract_outcome(FIXTURE_WALL_CAPTCHA),
+            Some(Outcome::Neutral)
+        );
+    }
+
+    #[test]
+    fn extract_outcome_wall_auth_is_neutral() {
+        assert_eq!(extract_outcome(FIXTURE_WALL_AUTH), Some(Outcome::Neutral));
+    }
+
+    #[test]
+    fn extract_outcome_jsonrpc_error_envelope_is_none() {
+        assert_eq!(extract_outcome(FIXTURE_JSONRPC_ERROR), None);
+    }
+
+    #[test]
+    fn extract_outcome_garbage_is_none() {
+        assert_eq!(extract_outcome("not json"), None);
+        assert_eq!(extract_outcome("{}"), None);
+        assert_eq!(extract_outcome(r#"{"jsonrpc":"2.0"}"#), None);
+    }
+
+    // ── (a) N distinct-URL wall.challenge responses for listed host flip /ready ──
+
+    #[test]
+    fn wall_challenge_n_distinct_urls_latches_ready() {
+        // Drives extract_outcome + record_outcome (the mcp_handler path) with
+        // real fixture strings.  Three distinct-URL wall.challenge responses
+        // must flip the guard to burned.
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let config = crate::mcp::wall_guard::WallGuardConfig {
+            evict_after_walls: Some(3),
+            evict_hosts: ["tapology.com"].iter().map(|s| s.to_string()).collect(),
+            evict_grace_secs: 30,
+            evict_min_uptime_secs: 0,
+        };
+        let guard = crate::mcp::wall_guard::WallGuard::new(config, notify);
+
+        let o1 = extract_outcome(FIXTURE_WALL_CHALLENGE).unwrap();
+        assert_eq!(o1, Outcome::WallBlocking);
+        assert!(!guard.record_outcome("https://tapology.com/page1", o1));
+        assert!(!guard.is_burned());
+
+        let o2 = extract_outcome(FIXTURE_WALL_CHALLENGE).unwrap();
+        assert!(!guard.record_outcome("https://tapology.com/page2", o2));
+        assert!(!guard.is_burned());
+
+        let o3 = extract_outcome(FIXTURE_WALL_CHALLENGE).unwrap();
+        let latched = guard.record_outcome("https://tapology.com/page3", o3);
+        assert!(latched, "third distinct wall must latch");
+        assert!(guard.is_burned(), "/ready must flip to 503 (burned)");
+        // /health is unconditional; it never checks is_burned()
+    }
+
+    // ── (b) wall.paywall/captcha/auth x20 never flip /ready ──
+
+    #[test]
+    fn neutral_wall_codes_x20_never_latch_ready() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let config = crate::mcp::wall_guard::WallGuardConfig {
+            evict_after_walls: Some(1),
+            evict_hosts: ["tapology.com"].iter().map(|s| s.to_string()).collect(),
+            evict_grace_secs: 30,
+            evict_min_uptime_secs: 0,
+        };
+        let guard = crate::mcp::wall_guard::WallGuard::new(config, notify);
+
+        for (i, fixture) in [
+            FIXTURE_WALL_PAYWALL,
+            FIXTURE_WALL_CAPTCHA,
+            FIXTURE_WALL_AUTH,
+        ]
+        .iter()
+        .enumerate()
+        {
+            for j in 0..7 {
+                let outcome = extract_outcome(fixture).unwrap();
+                assert_eq!(outcome, Outcome::Neutral);
+                let url = format!("https://tapology.com/page{}-{}", i, j);
+                assert!(!guard.record_outcome(&url, outcome));
+            }
+        }
+        assert!(
+            !guard.is_burned(),
+            "21 neutral outcomes must never flip /ready"
+        );
+    }
+
+    // ── (c) tapology ok, other-host wall x10, tapology ok => not burned ──
+
+    #[test]
+    fn tapology_ok_other_host_walls_tapology_ok_not_burned() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let config = crate::mcp::wall_guard::WallGuardConfig {
+            evict_after_walls: Some(3),
+            evict_hosts: ["tapology.com"].iter().map(|s| s.to_string()).collect(),
+            evict_grace_secs: 30,
+            evict_min_uptime_secs: 0,
+        };
+        let guard = crate::mcp::wall_guard::WallGuard::new(config, notify);
+
+        let ok = extract_outcome(FIXTURE_SUCCESS).unwrap();
+        guard.record_outcome("https://tapology.com/ok1", ok);
+
+        let wall = extract_outcome(FIXTURE_WALL_CHALLENGE).unwrap();
+        for i in 0..10 {
+            guard.record_outcome(&format!("https://othersite.com/page{i}"), wall);
+        }
+        assert!(
+            !guard.is_burned(),
+            "other-host walls must not burn tapology"
+        );
+
+        guard.record_outcome("https://tapology.com/ok2", ok);
+        assert!(!guard.is_burned());
+    }
+
+    // ── (d) tapology wall xN distinct => burned even with other-host successes ──
+
+    #[test]
+    fn tapology_wall_n_distinct_burned_even_with_other_host_successes() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let config = crate::mcp::wall_guard::WallGuardConfig {
+            evict_after_walls: Some(3),
+            evict_hosts: ["tapology.com"].iter().map(|s| s.to_string()).collect(),
+            evict_grace_secs: 30,
+            evict_min_uptime_secs: 0,
+        };
+        let guard = crate::mcp::wall_guard::WallGuard::new(config, notify);
+
+        let wall = extract_outcome(FIXTURE_WALL_CHALLENGE).unwrap();
+        let ok = extract_outcome(FIXTURE_SUCCESS).unwrap();
+
+        guard.record_outcome("https://tapology.com/page1", wall);
+        guard.record_outcome("https://other.com/ok", ok);
+        guard.record_outcome("https://tapology.com/page2", wall);
+        guard.record_outcome("https://other.com/ok2", ok);
+        assert!(!guard.is_burned());
+
+        let latched = guard.record_outcome("https://tapology.com/page3", wall);
+        assert!(
+            latched,
+            "third tapology wall must latch despite other-host successes"
+        );
+        assert!(guard.is_burned());
+    }
+
+    // ── (e) production SUCCESS shape resets the streak ──
+
+    #[test]
+    fn production_success_shape_resets_streak() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let config = crate::mcp::wall_guard::WallGuardConfig {
+            evict_after_walls: Some(3),
+            evict_hosts: ["tapology.com"].iter().map(|s| s.to_string()).collect(),
+            evict_grace_secs: 30,
+            evict_min_uptime_secs: 0,
+        };
+        let guard = crate::mcp::wall_guard::WallGuard::new(config, notify);
+
+        let wall = extract_outcome(FIXTURE_WALL_CHALLENGE).unwrap();
+        let success = extract_outcome(FIXTURE_SUCCESS).unwrap();
+        assert_eq!(success, Outcome::Success);
+
+        guard.record_outcome("https://tapology.com/page1", wall);
+        guard.record_outcome("https://tapology.com/page2", wall);
+        assert!(!guard.is_burned());
+
+        guard.record_outcome("https://tapology.com/ok", success);
+
+        guard.record_outcome("https://tapology.com/page3", wall);
+        guard.record_outcome("https://tapology.com/page4", wall);
+        assert!(
+            !guard.is_burned(),
+            "streak was reset; 2 new walls not enough"
+        );
+
+        let latched = guard.record_outcome("https://tapology.com/page5", wall);
+        assert!(latched, "third new wall after reset must latch");
+        assert!(guard.is_burned());
+    }
+
+    // ── Shutdown drain: in-flight <= 1 check ──
+    //
+    // The drain loop in mcp_handler uses <= 1 because the triggering request
+    // itself is still counted (InFlightGuard hasn't dropped yet).  With
+    // in_flight = 1 the loop exits on first poll; with in_flight > 1 it
+    // waits until requests finish (or the grace deadline expires).
+
+    #[tokio::test]
+    async fn shutdown_drain_resolves_when_in_flight_le_1() {
+        let in_flight = Arc::new(AtomicI64::new(1));
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let notify_clone = Arc::clone(&notify);
+        let in_flight_clone = Arc::clone(&in_flight);
+
+        tokio::spawn(async move {
+            let deadline = tokio::time::sleep(Duration::from_secs(5));
+            tokio::pin!(deadline);
+            loop {
+                if in_flight_clone.load(AtomicOrdering::SeqCst) <= 1 {
+                    break;
+                }
+                tokio::select! {
+                    _ = &mut deadline => break,
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                }
+            }
+            notify_clone.notify_one();
+        });
+
+        // in_flight == 1: loop exits immediately
+        tokio::time::timeout(Duration::from_secs(2), notify.notified())
+            .await
+            .expect("shutdown notify must fire when in_flight <= 1");
+    }
+
+    #[tokio::test]
+    async fn shutdown_drain_waits_for_in_flight_to_drop() {
+        let in_flight = Arc::new(AtomicI64::new(3));
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let notify_clone = Arc::clone(&notify);
+        let in_flight_clone = Arc::clone(&in_flight);
+        let in_flight_dec = Arc::clone(&in_flight);
+
+        tokio::spawn(async move {
+            let deadline = tokio::time::sleep(Duration::from_secs(5));
+            tokio::pin!(deadline);
+            loop {
+                if in_flight_clone.load(AtomicOrdering::SeqCst) <= 1 {
+                    break;
+                }
+                tokio::select! {
+                    _ = &mut deadline => break,
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                }
+            }
+            notify_clone.notify_one();
+        });
+
+        let early = tokio::time::timeout(Duration::from_millis(50), notify.notified()).await;
+        assert!(early.is_err(), "drain must not fire while in_flight > 1");
+
+        in_flight_dec.fetch_sub(2, AtomicOrdering::SeqCst);
+
+        tokio::time::timeout(Duration::from_secs(2), notify.notified())
+            .await
+            .expect("drain must fire once in_flight drops to 1");
+    }
+
+    // ── extract_web_fetch_info ──
+
+    #[test]
+    fn extract_web_fetch_info_parses_tools_call() {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "web_fetch",
+                "arguments": {"url": "https://tapology.com/events/123"}
+            }
+        });
+        let result = extract_web_fetch_info(&req);
+        assert_eq!(
+            result,
+            Some((
+                "web_fetch".to_string(),
+                "https://tapology.com/events/123".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn extract_web_fetch_info_ignores_non_web_fetch() {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "web_search", "arguments": {"url": "https://tapology.com/"}}
+        });
+        assert_eq!(extract_web_fetch_info(&req), None);
+    }
+
+    #[test]
+    fn extract_web_fetch_info_ignores_non_tools_call() {
+        let req = serde_json::json!({"method": "initialize", "id": 1});
+        assert_eq!(extract_web_fetch_info(&req), None);
+    }
+
+    // ── Min-uptime floor ──
+    //
+    // record_outcome returns early on a repeated same URL; after the floor
+    // passes a latch only happens on the NEXT distinct wall.
+
+    #[test]
+    fn min_uptime_floor_prevents_latch_until_new_distinct_wall() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let config = crate::mcp::wall_guard::WallGuardConfig {
+            evict_after_walls: Some(2),
+            evict_hosts: ["tapology.com"].iter().map(|s| s.to_string()).collect(),
+            evict_grace_secs: 30,
+            evict_min_uptime_secs: 999_999, // floor never passes in a test
+        };
+        let guard = crate::mcp::wall_guard::WallGuard::new(config, notify);
+
+        // Streak reaches 2 but uptime floor not met => no latch
+        assert!(!guard.record_outcome("https://tapology.com/page1", Outcome::WallBlocking));
+        assert!(!guard.record_outcome("https://tapology.com/page2", Outcome::WallBlocking));
+        assert!(!guard.is_burned(), "uptime floor prevents latch");
+
+        // Same URL repeated => early return, no streak advance (already in set)
+        assert!(!guard.record_outcome("https://tapology.com/page1", Outcome::WallBlocking));
+        assert!(!guard.is_burned(), "same URL must not advance streak");
+
+        // A third distinct URL increments the streak further but still no latch
+        assert!(!guard.record_outcome("https://tapology.com/page3", Outcome::WallBlocking));
+        assert!(
+            !guard.is_burned(),
+            "still above uptime floor; no latch possible"
+        );
     }
 }
