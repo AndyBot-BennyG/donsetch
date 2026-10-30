@@ -788,6 +788,27 @@ Bright Data's residential proxy (port 44445) re-terminates TLS with its own CA. 
 
 > **Note:** Do not use port 33335 or 22225 — the legacy CA expired 2026-09-25. Only port 44445 with the new CA works. TLS verification is never disabled; the CA must be trusted explicitly.
 
+### Instance eviction (wall guard)
+
+When DonSeTch detects its egress IP has been blocked by a target site, it can evict itself from Cloud Run rotation by failing readiness checks and shutting down gracefully.
+
+Feature is **OFF by default**. Requires BOTH `DONSETCH_EVICT_AFTER_WALLS` and `DONSETCH_EVICT_HOSTS` to be set.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DONSETCH_EVICT_AFTER_WALLS` | unset | Number of consecutive walls on distinct URLs for a protected host before eviction. Unset/0/invalid = feature OFF. |
+| `DONSETCH_EVICT_HOSTS` | unset | Comma-separated registrable-domain hosts allowed to trigger eviction (e.g. `tapology.com`). Unset/empty = feature OFF. Walls from other hosts are tracked in stats but cannot latch eviction. |
+| `DONSETCH_EVICT_GRACE_SECS` | 30 | Seconds to wait for in-flight requests to drain before triggering shutdown. |
+| `DONSETCH_EVICT_MIN_UPTIME_SECS` | 0 | Minimum instance uptime in seconds before eviction is allowed. Suggested production value: 120. Prevents restart loops if a site-wide block occurs at startup. |
+
+Suggested production values for Tapology: `DONSETCH_EVICT_AFTER_WALLS=6`, `DONSETCH_EVICT_HOSTS=tapology.com`, `DONSETCH_EVICT_MIN_UPTIME_SECS=120`.
+
+When the eviction counter fires:
+1. `/ready` returns HTTP 503 `{"status":"burned"}` — Cloud Run stops sending new traffic.
+2. The instance waits up to `DONSETCH_EVICT_GRACE_SECS` for in-flight requests to complete.
+3. Graceful shutdown runs (same path as SIGTERM), process exits 0.
+4. `/health` remains 200 throughout — do not make the liveness probe fail.
+
 ## 🔐 Logged-in sessions
 
 Pages behind a login (x.com, gated docs, internal tools) need a real session. `donsetch login` gives you one without ever seeing your credentials:

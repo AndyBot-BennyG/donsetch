@@ -33,6 +33,7 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -56,6 +57,7 @@ use tower_http::{
 };
 
 use crate::mcp::server::{CancelMap, Daemon, cancel_key, handle};
+use crate::mcp::wall_guard::{WallGuard, WallGuardConfig, Outcome};
 
 /// Idle sessions are dropped after this long, so cancelled-tool
 /// registries cannot leak forever for clients that vanish mid-call.
@@ -93,11 +95,13 @@ struct SessionTable {
 struct HttpState {
     daemon: Arc<Daemon>,
     sessions: Arc<SessionTable>,
-    /// When set, requests must carry `Authorization: Bearer <token>`.
+    /// When set, requests must carry `Authorization: Bearer ***
     auth_token: Option<String>,
     timeout: Duration,
     cors_enabled: bool,
     bound: Bound,
+    wall_guard: Arc<WallGuard>,
+    in_flight: Arc<AtomicI64>,
 }
 
 /// Run the HTTP MCP server until SIGTERM/SIGINT.
@@ -119,6 +123,15 @@ pub async fn run(host: String, port: u16) -> Result<(), Box<dyn std::error::Erro
     let daemon = Arc::new(Daemon::new().await.map_err(|e| e.to_string())?);
     daemon.start_prober();
 
+    // Initialize wall guard from environment
+    let notify_shutdown = Arc::new(tokio::sync::Notify::new());
+    let wall_guard_config = WallGuardConfig::from_env();
+    let wall_guard = if wall_guard_config.is_enabled() {
+        WallGuard::new(wall_guard_config.clone(), Arc::clone(&notify_shutdown))
+    } else {
+        WallGuard::disabled()
+    };
+
     let state = HttpState {
         daemon: Arc::clone(&daemon),
         sessions: Arc::new(SessionTable {
@@ -128,10 +141,16 @@ pub async fn run(host: String, port: u16) -> Result<(), Box<dyn std::error::Erro
         timeout,
         cors_enabled,
         bound: Bound::new(&host, port),
+        wall_guard,
+        in_flight: Arc::new(AtomicI64::new(0)),
     };
 
     let app = Router::new()
         .route("/health", get(health_handler))
+        .route(
+            "/ready",
+            get(ready_handler),
+        )
         .route(
             "/mcp",
             post(mcp_handler).get(sse_handler).delete(delete_handler),
@@ -157,7 +176,7 @@ pub async fn run(host: String, port: u16) -> Result<(), Box<dyn std::error::Erro
     }
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(notify_shutdown))
         .await?;
 
     // Drain done; stop the daemon so no orphan browsers survive.
@@ -166,8 +185,8 @@ pub async fn run(host: String, port: u16) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-/// Resolve SIGTERM/SIGINT into a future that completes on either.
-async fn shutdown_signal() {
+/// Resolve SIGTERM/SIGINT into a future that completes on either, or wall_guard eviction.
+async fn shutdown_signal(notify_shutdown: Arc<tokio::sync::Notify>) {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
@@ -186,6 +205,7 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+        _ = notify_shutdown.notified() => {},
     }
     crate::diag!("[mcp] shutdown signal received; draining in-flight requests");
 }
@@ -193,6 +213,28 @@ async fn shutdown_signal() {
 /// Liveness probe for orchestrators and load balancers.
 async fn health_handler() -> impl IntoResponse {
     Json(json!({ "status": "ok", "transport": "http" }))
+}
+
+/// Readiness probe: returns 503 when instance is burned.
+async fn ready_handler(
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let status = state.wall_guard.ready_status();
+    if status.burned {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "burned",
+                "total_walls": status.total_walls,
+                "evictions": status.eviction_count,
+            })),
+        )
+    } else {
+        (
+            StatusCode::OK,
+            Json(json!({"status": "ready"})),
+        )
+    }
 }
 
 /// Refuse the classic "localhost server + permissive CORS = drive-by"
@@ -528,6 +570,64 @@ impl HttpState {
     }
 }
 
+/// Guard to automatically decrement in-flight counter on drop.
+struct InFlightGuard {
+    in_flight: Arc<AtomicI64>,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.in_flight.fetch_sub(1, AtomicOrdering::SeqCst);
+    }
+}
+
+/// Extract tool name and URL from a web_fetch request if applicable.
+fn extract_web_fetch_info(req: &Value) -> Option<(String, String)> {
+    let method = req.get("method").and_then(Value::as_str)?;
+    if method != "tools/call" {
+        return None;
+    }
+    let tool_name = req.get("params")
+        .and_then(|p| p.get("name"))
+        .and_then(Value::as_str)?;
+    if tool_name != "web_fetch" {
+        return None;
+    }
+    let url = req.get("params")
+        .and_then(|p| p.get("arguments"))
+        .and_then(|a| a.get("url"))
+        .and_then(Value::as_str)?;
+    Some((tool_name.to_string(), url.to_string()))
+}
+
+/// Extract outcome from tool response.
+fn extract_outcome(resp_str: &str) -> Option<Outcome> {
+    let resp: Value = serde_json::from_str(resp_str).ok()?;
+    
+    // Check for success: structuredContent.ok == true
+    if let Some(true) = resp.get("structuredContent")
+        .and_then(|s| s.get("ok"))
+        .and_then(Value::as_bool)
+    {
+        return Some(Outcome::Success);
+    }
+    
+    // Check for error code
+    let code = resp.get("structuredContent")
+        .and_then(|s| s.get("code"))
+        .and_then(Value::as_str)?;
+    
+    // Counted as WallBlocking
+    if code == "wall.challenge" 
+        || code == "wall.challenge_unsolved" 
+        || code == "wall.blocked" {
+        return Some(Outcome::WallBlocking);
+    }
+    
+    // Neutral
+    Some(Outcome::Neutral)
+}
+
 /// JSON-RPC request handler.
 ///
 /// Accepts MCP JSON-RPC requests via POST and returns responses. Every
@@ -559,6 +659,14 @@ async fn mcp_handler(State(state): State<HttpState>, headers: HeaderMap, body: B
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+
+    // Track in-flight requests
+    state.in_flight.fetch_add(1, AtomicOrdering::SeqCst);
+    
+    // Ensure we always decrement on exit
+    let _in_flight_guard = InFlightGuard {
+        in_flight: Arc::clone(&state.in_flight),
+    };
 
     // Cancellation notifications are handled inline : they must reach
     // the running tool NOW, not after a full dispatch round-trip.
@@ -631,6 +739,41 @@ async fn mcp_handler(State(state): State<HttpState>, headers: HeaderMap, body: B
             )
         }
         Ok(Some(resp_line)) => {
+            // Record wall_guard outcome if applicable
+            if let Some((_, url)) = extract_web_fetch_info(&req) {
+                if let Some(outcome) = extract_outcome(&resp_line) {
+                    let should_burn = state.wall_guard.record_outcome(&url, outcome);
+                    if should_burn {
+                        // Initiate drain + shutdown
+                        let state_clone = state.clone();
+                        let resp_line_clone = resp_line.clone();
+                        let wall_guard = Arc::clone(&state.wall_guard);
+                        tokio::spawn(async move {
+                            // Get uptime and streak count for logging
+                            let status = wall_guard.ready_status();
+                            let deadline = tokio::time::sleep(Duration::from_secs(
+                                wall_guard.grace_secs()
+                            ));
+                            tokio::pin!(deadline);
+                            loop {
+                                if state_clone.in_flight.load(AtomicOrdering::SeqCst) <= 1 {
+                                    break;
+                                }
+                                tokio::select! {
+                                    _ = &mut deadline => break,
+                                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                                }
+                            }
+                            crate::diag!(
+                                "[wall_guard] instance burned, initiating graceful shutdown (total_walls={})",
+                                status.total_walls
+                            );
+                            wall_guard.shutdown_notifier().notify_one();
+                        });
+                    }
+                }
+            }
+
             let resp: Value = serde_json::from_str(&resp_line).unwrap_or_else(|_| {
                 json!({
                     "jsonrpc": "2.0", "id": null,
