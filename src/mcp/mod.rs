@@ -10,6 +10,7 @@ pub mod server;
 pub mod stdio;
 pub mod supervisor;
 pub mod tools;
+pub mod wall_guard;
 
 #[cfg(feature = "http")]
 pub mod http;

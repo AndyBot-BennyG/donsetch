@@ -41,6 +41,21 @@ use search_tool::*;
 
 use super::tools;
 
+/// Test-only: when `Some`, `call_tool_ctx` returns this JSON string as the
+/// `web_fetch` tool result without doing any real fetch.  Protected by a
+/// RwLock: tests serialize via MOCK_SERIAL (a separate Mutex) in handler_tests,
+/// and call_tool_ctx takes a non-blocking read lock.
+#[cfg(test)]
+pub(super) static WEB_FETCH_MOCK_RESPONSE: std::sync::RwLock<Option<String>> =
+    std::sync::RwLock::new(None);
+
+/// Serializes test access to WEB_FETCH_MOCK_RESPONSE so parallel tests
+/// don't interleave their set/clear windows.  Tests hold this lock for the
+/// entire mock window (including the async requests), then clear the value
+/// and release.
+#[cfg(test)]
+pub(super) static WEB_FETCH_MOCK_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Shared daemon state, built once, lives forever.
 pub struct Daemon {
     fetcher: Arc<Fetcher>,
@@ -75,6 +90,10 @@ pub struct Daemon {
 impl Daemon {
     pub async fn new() -> Result<Self, crate::error::FetchError> {
         // Log configured proxy lane NAMES at startup (never values).
+        // Skip in tests to avoid panicking on non-UTF-8 env vars set by
+        // parallel config tests (log_proxy_lanes iterates std::env::vars()
+        // which panics on non-UTF-8 values).
+        #[cfg(not(test))]
         crate::config::log_proxy_lanes();
         let profile = BrowserProfile::host_default();
         // One egress fabric for search, crawl, and fetch (v4 A2).
@@ -556,6 +575,25 @@ pub(crate) async fn call_tool_ctx(
     // unknown fields and wrong types before any network or browser work.
     if let Some(rejected) = invalid_args_error(name, &args) {
         return Ok(rejected);
+    }
+    // Test-only seam: when WEB_FETCH_MOCK_RESPONSE is set (via the static
+    // below), return its value as the tool result without doing any real
+    // fetch.  This lets handler-level tests drive mcp_handler through the
+    // real router while controlling the response shape (e.g. wall.challenge)
+    // without a browser or network.  The static avoids process-global env-var
+    // races when multiple tests run in parallel.
+    // The guard is #[cfg(test)] so it compiles out entirely in release mode.
+    #[cfg(test)]
+    if name == "web_fetch" {
+        let maybe = WEB_FETCH_MOCK_RESPONSE
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(mock_json) = maybe {
+            let v: serde_json::Value = serde_json::from_str(&mock_json)
+                .unwrap_or_else(|_| serde_json::json!({"error": "bad mock JSON"}));
+            return Ok(v);
+        }
     }
     match name {
         "web_fetch" => Ok(Box::pin(fetch_tool::fetch_tool(daemon, &args, ctx)).await),
