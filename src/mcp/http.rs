@@ -755,35 +755,35 @@ async fn mcp_handler(State(state): State<HttpState>, headers: HeaderMap, body: B
         }
         Ok(Some(resp_line)) => {
             // Record wall_guard outcome if applicable
-            if let Some((_, url)) = extract_web_fetch_info(&req) {
-                if let Some(outcome) = extract_outcome(&resp_line) {
-                    let should_burn = state.wall_guard.record_outcome(&url, outcome);
-                    if should_burn {
-                        // Initiate drain + shutdown
-                        let state_clone = state.clone();
-                        let wall_guard = Arc::clone(&state.wall_guard);
-                        tokio::spawn(async move {
-                            // Get uptime and streak count for logging
-                            let status = wall_guard.ready_status();
-                            let deadline =
-                                tokio::time::sleep(Duration::from_secs(wall_guard.grace_secs()));
-                            tokio::pin!(deadline);
-                            loop {
-                                if state_clone.in_flight.load(AtomicOrdering::SeqCst) <= 1 {
-                                    break;
-                                }
-                                tokio::select! {
-                                    _ = &mut deadline => break,
-                                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
-                                }
+            if let Some((_, url)) = extract_web_fetch_info(&req)
+                && let Some(outcome) = extract_outcome(&resp_line)
+            {
+                let should_burn = state.wall_guard.record_outcome(&url, outcome);
+                if should_burn {
+                    // Initiate drain + shutdown
+                    let state_clone = state.clone();
+                    let wall_guard = Arc::clone(&state.wall_guard);
+                    tokio::spawn(async move {
+                        // Get uptime and streak count for logging
+                        let status = wall_guard.ready_status();
+                        let deadline =
+                            tokio::time::sleep(Duration::from_secs(wall_guard.grace_secs()));
+                        tokio::pin!(deadline);
+                        loop {
+                            if state_clone.in_flight.load(AtomicOrdering::SeqCst) <= 1 {
+                                break;
                             }
-                            crate::diag!(
-                                "[wall_guard] instance burned, initiating graceful shutdown (total_walls={})",
-                                status.total_walls
-                            );
-                            wall_guard.shutdown_notifier().notify_one();
-                        });
-                    }
+                            tokio::select! {
+                                _ = &mut deadline => break,
+                                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                            }
+                        }
+                        crate::diag!(
+                            "[wall_guard] instance burned, initiating graceful shutdown (total_walls={})",
+                            status.total_walls
+                        );
+                        wall_guard.shutdown_notifier().notify_one();
+                    });
                 }
             }
 

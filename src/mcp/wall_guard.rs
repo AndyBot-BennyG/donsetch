@@ -124,11 +124,12 @@ impl<K: Clone + Eq + std::hash::Hash, V> BoundedLruMap<K, V> {
         if self.map.contains_key(&key) {
             self.map.get_mut(&key).unwrap()
         } else {
-            if self.map.len() >= self.capacity && !self.map.is_empty() {
-                if let Some(oldest) = self.keys.first().cloned() {
-                    self.map.remove(&oldest);
-                    self.keys.remove(0);
-                }
+            if self.map.len() >= self.capacity
+                && !self.map.is_empty()
+                && let Some(oldest) = self.keys.first().cloned()
+            {
+                self.map.remove(&oldest);
+                self.keys.remove(0);
             }
             self.keys.push(key.clone());
             self.map.insert(key.clone(), f());
@@ -252,7 +253,7 @@ impl WallGuard {
                 state.total_walls += 1;
                 let entry = state
                     .host_streaks
-                    .get_or_insert(host.clone(), || HostStreak::new());
+                    .get_or_insert(host.clone(), HostStreak::new);
                 let norm_url = normalise_url(url);
 
                 if entry.seen_urls_in_streak.contains(&norm_url) {
@@ -264,19 +265,16 @@ impl WallGuard {
                 entry.streak += 1;
 
                 // Check if we should latch
-                if self.config.evict_hosts.contains(&host) {
-                    if let Some(n) = self.config.evict_after_walls {
-                        if entry.streak >= n {
-                            // Check min uptime
-                            if self.started_at.elapsed().as_secs()
-                                >= self.config.evict_min_uptime_secs
-                            {
-                                // LATCH
-                                self.burned.store(true, Ordering::SeqCst);
-                                state.eviction_count = 1;
-                                return true;
-                            }
-                        }
+                if self.config.evict_hosts.contains(&host)
+                    && let Some(n) = self.config.evict_after_walls
+                    && entry.streak >= n
+                {
+                    // Check min uptime
+                    if self.started_at.elapsed().as_secs() >= self.config.evict_min_uptime_secs {
+                        // LATCH
+                        self.burned.store(true, Ordering::SeqCst);
+                        state.eviction_count = 1;
+                        return true;
                     }
                 }
                 false
