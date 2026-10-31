@@ -145,6 +145,30 @@ pub async fn run(host: String, port: u16) -> Result<(), Box<dyn std::error::Erro
         in_flight: Arc::new(AtomicI64::new(0)),
     };
 
+    let app = build_router(state, cors_enabled);
+
+    let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
+    if auth_enabled {
+        crate::diag!("[mcp] HTTP server listening on http://{host}:{port} (bearer auth enabled)");
+    } else {
+        crate::diag!("[mcp] HTTP server listening on http://{host}:{port}");
+    }
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(notify_shutdown))
+        .await?;
+
+    // Drain done; stop the daemon so no orphan browsers survive.
+    crate::diag!("[mcp] draining complete, shutting daemon down");
+    daemon.shutdown().await;
+    Ok(())
+}
+
+/// Build the axum router from a pre-constructed HttpState.
+///
+/// Called by run() for the real server, and by handler-level tests to drive
+/// the real routes with tower::ServiceExt::oneshot or an in-process server.
+fn build_router(state: HttpState, cors_enabled: bool) -> axum::Router {
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
@@ -163,23 +187,7 @@ pub async fn run(host: String, port: u16) -> Result<(), Box<dyn std::error::Erro
     } else {
         app
     };
-    let app = app.with_state(state);
-
-    let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
-    if auth_enabled {
-        crate::diag!("[mcp] HTTP server listening on http://{host}:{port} (bearer auth enabled)");
-    } else {
-        crate::diag!("[mcp] HTTP server listening on http://{host}:{port}");
-    }
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(notify_shutdown))
-        .await?;
-
-    // Drain done; stop the daemon so no orphan browsers survive.
-    crate::diag!("[mcp] draining complete, shutting daemon down");
-    daemon.shutdown().await;
-    Ok(())
+    app.with_state(state)
 }
 
 /// Resolve SIGTERM/SIGINT into a future that completes on either, or wall_guard eviction.
@@ -643,6 +651,31 @@ fn extract_outcome(resp_str: &str) -> Option<Outcome> {
     Some(Outcome::Neutral)
 }
 
+/// Drain in-flight requests then fire the shutdown notifier.
+///
+/// Called by mcp_handler (via tokio::spawn) when the wall guard latches burned.
+/// Waits until in_flight <= 1 (the triggering request itself is still counted)
+/// or until the grace timeout elapses, then notifies shutdown.
+async fn drain_and_shutdown(in_flight: Arc<AtomicI64>, wall_guard: Arc<WallGuard>) {
+    let status = wall_guard.ready_status();
+    let deadline = tokio::time::sleep(Duration::from_secs(wall_guard.grace_secs()));
+    tokio::pin!(deadline);
+    loop {
+        if in_flight.load(AtomicOrdering::SeqCst) <= 1 {
+            break;
+        }
+        tokio::select! {
+            _ = &mut deadline => break,
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+    }
+    crate::diag!(
+        "[wall_guard] instance burned, initiating graceful shutdown (total_walls={})",
+        status.total_walls
+    );
+    wall_guard.shutdown_notifier().notify_one();
+}
+
 /// JSON-RPC request handler.
 ///
 /// Accepts MCP JSON-RPC requests via POST and returns responses. Every
@@ -761,29 +794,10 @@ async fn mcp_handler(State(state): State<HttpState>, headers: HeaderMap, body: B
                 let should_burn = state.wall_guard.record_outcome(&url, outcome);
                 if should_burn {
                     // Initiate drain + shutdown
-                    let state_clone = state.clone();
-                    let wall_guard = Arc::clone(&state.wall_guard);
-                    tokio::spawn(async move {
-                        // Get uptime and streak count for logging
-                        let status = wall_guard.ready_status();
-                        let deadline =
-                            tokio::time::sleep(Duration::from_secs(wall_guard.grace_secs()));
-                        tokio::pin!(deadline);
-                        loop {
-                            if state_clone.in_flight.load(AtomicOrdering::SeqCst) <= 1 {
-                                break;
-                            }
-                            tokio::select! {
-                                _ = &mut deadline => break,
-                                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
-                            }
-                        }
-                        crate::diag!(
-                            "[wall_guard] instance burned, initiating graceful shutdown (total_walls={})",
-                            status.total_walls
-                        );
-                        wall_guard.shutdown_notifier().notify_one();
-                    });
+                    tokio::spawn(drain_and_shutdown(
+                        Arc::clone(&state.in_flight),
+                        Arc::clone(&state.wall_guard),
+                    ));
                 }
             }
 
@@ -1380,34 +1394,36 @@ mod tests {
 
     // ── Shutdown drain: in-flight <= 1 check ──
     //
-    // The drain loop in mcp_handler uses <= 1 because the triggering request
-    // itself is still counted (InFlightGuard hasn't dropped yet).  With
-    // in_flight = 1 the loop exits on first poll; with in_flight > 1 it
-    // waits until requests finish (or the grace deadline expires).
+    // These tests call the REAL drain_and_shutdown function extracted from
+    // mcp_handler.  If the real loop is broken these tests fail (unlike the
+    // old approach which copied the loop and tested the copy).
+    //
+    // drain_and_shutdown uses <= 1 because the triggering request itself is
+    // still counted (InFlightGuard hasn't dropped yet).
+
+    fn make_drain_guard_with_grace(grace_secs: u64) -> Arc<WallGuard> {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let config = WallGuardConfig {
+            evict_after_walls: Some(1),
+            evict_hosts: ["tapology.com"].iter().map(|s| s.to_string()).collect(),
+            evict_grace_secs: grace_secs,
+            evict_min_uptime_secs: 0,
+        };
+        WallGuard::new(config, notify)
+    }
 
     #[tokio::test]
     async fn shutdown_drain_resolves_when_in_flight_le_1() {
         let in_flight = Arc::new(AtomicI64::new(1));
-        let notify = Arc::new(tokio::sync::Notify::new());
-        let notify_clone = Arc::clone(&notify);
-        let in_flight_clone = Arc::clone(&in_flight);
+        let guard = make_drain_guard_with_grace(5);
+        let notify = guard.shutdown_notifier();
 
-        tokio::spawn(async move {
-            let deadline = tokio::time::sleep(Duration::from_secs(5));
-            tokio::pin!(deadline);
-            loop {
-                if in_flight_clone.load(AtomicOrdering::SeqCst) <= 1 {
-                    break;
-                }
-                tokio::select! {
-                    _ = &mut deadline => break,
-                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
-                }
-            }
-            notify_clone.notify_one();
-        });
+        tokio::spawn(drain_and_shutdown(
+            Arc::clone(&in_flight),
+            Arc::clone(&guard),
+        ));
 
-        // in_flight == 1: loop exits immediately
+        // in_flight == 1: drain_and_shutdown exits immediately
         tokio::time::timeout(Duration::from_secs(2), notify.notified())
             .await
             .expect("shutdown notify must fire when in_flight <= 1");
@@ -1416,25 +1432,14 @@ mod tests {
     #[tokio::test]
     async fn shutdown_drain_waits_for_in_flight_to_drop() {
         let in_flight = Arc::new(AtomicI64::new(3));
-        let notify = Arc::new(tokio::sync::Notify::new());
-        let notify_clone = Arc::clone(&notify);
-        let in_flight_clone = Arc::clone(&in_flight);
         let in_flight_dec = Arc::clone(&in_flight);
+        let guard = make_drain_guard_with_grace(5);
+        let notify = guard.shutdown_notifier();
 
-        tokio::spawn(async move {
-            let deadline = tokio::time::sleep(Duration::from_secs(5));
-            tokio::pin!(deadline);
-            loop {
-                if in_flight_clone.load(AtomicOrdering::SeqCst) <= 1 {
-                    break;
-                }
-                tokio::select! {
-                    _ = &mut deadline => break,
-                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
-                }
-            }
-            notify_clone.notify_one();
-        });
+        tokio::spawn(drain_and_shutdown(
+            Arc::clone(&in_flight),
+            Arc::clone(&guard),
+        ));
 
         let early = tokio::time::timeout(Duration::from_millis(50), notify.notified()).await;
         assert!(early.is_err(), "drain must not fire while in_flight > 1");
@@ -1517,5 +1522,487 @@ mod tests {
             !guard.is_burned(),
             "still above uptime floor; no latch possible"
         );
+    }
+}
+
+// ── Handler-level integration tests ──────────────────────────────────────
+//
+// These tests drive the real router (build_router), real handler functions
+// (mcp_handler, ready_handler, health_handler), and the real WallGuard.
+//
+// Test seam: DONSETCH_WEB_FETCH_MOCK env-var (set inside #[cfg(test)] blocks
+// in call_tool_ctx) returns a controlled JSON value as the web_fetch tool
+// result without hitting the network.  This is the only seam used; no other
+// production code is stubbed.
+//
+// Daemon is constructed via Daemon::new() – it starts background tasks but
+// none of them affect the wall-guard path tested here.
+#[cfg(all(test, feature = "http"))]
+mod handler_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use serde_json::{Value, json};
+    use std::sync::atomic::AtomicI64;
+    use tower::ServiceExt; // for `oneshot`
+
+    /// Set the web_fetch mock response for this test and return a guard that
+    /// clears it on drop.  Uses the static in server::mod (not an env var) so
+    /// parallel tests that set other env vars cannot interfere.
+    /// Set the web_fetch mock for the current test window.
+    ///
+    /// Acquires `WEB_FETCH_MOCK_SERIAL` (a tokio Mutex) and sets
+    /// `WEB_FETCH_MOCK_RESPONSE` (a std RwLock).  The serial lock is held across
+    /// all `.await` points so parallel tests can't overwrite each other's mock.
+    /// `call_tool_ctx` reads the RwLock without acquiring the serial lock, so no
+    /// deadlock is possible even though requests run while the serial guard is held.
+    async fn set_mock(json: String) -> tokio::sync::MutexGuard<'static, ()> {
+        let guard = crate::mcp::server::WEB_FETCH_MOCK_SERIAL.lock().await;
+        *crate::mcp::server::WEB_FETCH_MOCK_RESPONSE
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(json);
+        guard
+    }
+
+    fn clear_mock(guard: tokio::sync::MutexGuard<'static, ()>) {
+        *crate::mcp::server::WEB_FETCH_MOCK_RESPONSE
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        drop(guard); // release serial lock
+    }
+
+    // ── fixture helpers ──────────────────────────────────────────────────
+
+    /// JSON of a `tools/call web_fetch` request for a given URL.
+    fn web_fetch_request(id: u32, url: &str) -> String {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": "web_fetch",
+                "arguments": {"url": url}
+            }
+        })
+        .to_string()
+    }
+
+    /// wall.challenge fixture – exact production shape.
+    fn wall_challenge_mock() -> String {
+        json!({
+            "code": "wall.challenge",
+            "content": [{"type": "text", "text": "[meta]"}],
+            "errorKind": "walled",
+            "isError": false
+        })
+        .to_string()
+    }
+
+
+    /// Build an HttpState with a fresh WallGuard wired to the given notifier
+    /// and config.  A real Daemon is constructed (no real network needed for
+    /// this code path since the mock seam intercepts web_fetch dispatch).
+    async fn make_state(
+        config: crate::mcp::wall_guard::WallGuardConfig,
+        notify: Arc<tokio::sync::Notify>,
+    ) -> HttpState {
+        make_state_on_port(config, notify, 0).await
+    }
+
+    /// Like make_state but allows specifying the port for Bound (needed when
+    /// building state before binding, then using the real port for host checks).
+    async fn make_state_on_port(
+        config: crate::mcp::wall_guard::WallGuardConfig,
+        notify: Arc<tokio::sync::Notify>,
+        port: u16,
+    ) -> HttpState {
+        // Suppress background probes: they don't affect wall-guard but may
+        // emit diag noise and we don't want lingering timers.
+        let mut cfg = crate::config::DonsetchConfig::default();
+        cfg.fetch.allow_private_egress = true;
+        cfg.proxy.from_environment = false;
+        cfg.browser.route_probes = false;
+        let _ = crate::config::install(cfg); // may fail if already installed – that's fine
+
+        let daemon = Arc::new(
+            crate::mcp::server::Daemon::new()
+                .await
+                .expect("Daemon::new in test"),
+        );
+
+        let wall_guard = if config.is_enabled() {
+            WallGuard::new(config, Arc::clone(&notify))
+        } else {
+            WallGuard::disabled()
+        };
+
+        HttpState {
+            daemon,
+            sessions: Arc::new(SessionTable {
+                sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }),
+            auth_token: None,
+            timeout: std::time::Duration::from_secs(30),
+            cors_enabled: false,
+            bound: Bound::new("127.0.0.1", port),
+            wall_guard,
+            in_flight: Arc::new(AtomicI64::new(0)),
+        }
+    }
+
+    /// Config: AFTER_WALLS=3, HOST=tapology.com, MIN_UPTIME=0, GRACE=1
+    fn tapology_config(grace_secs: u64) -> crate::mcp::wall_guard::WallGuardConfig {
+        crate::mcp::wall_guard::WallGuardConfig {
+            evict_after_walls: Some(3),
+            evict_hosts: ["tapology.com"].iter().map(|s| s.to_string()).collect(),
+            evict_grace_secs: grace_secs,
+            evict_min_uptime_secs: 0,
+        }
+    }
+
+    /// POST a request to /mcp via the real router.
+    /// Caller must hold the mock lock (via set_mock) before calling.
+    async fn post_wall(router: &axum::Router, id: u32, url: &str) -> axum::response::Response {
+        let body = web_fetch_request(id, url);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        router.clone().oneshot(req).await.unwrap()
+    }
+
+    async fn get_ready(router: &axum::Router) -> (StatusCode, Value) {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(json!(null));
+        (status, body)
+    }
+
+    async fn get_health(router: &axum::Router) -> StatusCode {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        router.clone().oneshot(req).await.unwrap().status()
+    }
+
+    // ── (h1) wall streak → /ready 503 ────────────────────────────────────
+    //
+    // 3 distinct tapology.com walls → /ready becomes 503 with status:burned.
+    // Before the 3rd wall /ready is still 200.
+    // /health is 200 throughout.
+    #[tokio::test]
+    async fn h1_wall_streak_burns_ready() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let state = make_state(tapology_config(30), Arc::clone(&notify)).await;
+        let router = build_router(state, false);
+
+        // health 200 before anything
+        assert_eq!(get_health(&router).await, StatusCode::OK);
+        // /ready 200 before streak
+        let (s, _) = get_ready(&router).await;
+        assert_eq!(s, StatusCode::OK);
+
+        // Set mock to wall.challenge
+        let _mock_guard = set_mock(wall_challenge_mock()).await;
+
+        // 1st wall
+        post_wall(&router, 1, "https://tapology.com/page1").await;
+        let (s, _) = get_ready(&router).await;
+        assert_eq!(s, StatusCode::OK, "ready should still be 200 after 1 wall");
+
+        // 2nd wall (distinct URL)
+        post_wall(&router, 2, "https://tapology.com/page2").await;
+        let (s, _) = get_ready(&router).await;
+        assert_eq!(s, StatusCode::OK, "ready should still be 200 after 2 walls");
+
+        // 3rd wall (distinct URL) — this latches burned
+        post_wall(&router, 3, "https://tapology.com/page3").await;
+
+        let (s, body) = get_ready(&router).await;
+        assert_eq!(
+            s,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ready must be 503 after burn"
+        );
+        assert_eq!(body["status"], "burned", "body must say burned");
+
+        // health still 200 after burn
+        assert_eq!(get_health(&router).await, StatusCode::OK);
+
+        clear_mock(_mock_guard);
+    }
+
+    // ── (h2) burn → shutdown notify fires (and not before streak) ────────
+    #[tokio::test]
+    async fn h2_burn_fires_shutdown_notify() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let state = make_state(tapology_config(30), Arc::clone(&notify)).await;
+        let router = build_router(state, false);
+
+        let _mock_guard = set_mock(wall_challenge_mock()).await;
+
+        // 2 walls – not yet burned
+        post_wall(&router, 1, "https://tapology.com/page1").await;
+        post_wall(&router, 2, "https://tapology.com/page2").await;
+
+        // notify must NOT have fired yet (give the spawned task a moment)
+        let early =
+            tokio::time::timeout(std::time::Duration::from_millis(100), notify.notified()).await;
+        assert!(early.is_err(), "notify must not fire before burn streak");
+
+        // 3rd wall – burns + fires drain_and_shutdown
+        post_wall(&router, 3, "https://tapology.com/page3").await;
+
+        // With in_flight == 0 the drain exits immediately
+        tokio::time::timeout(std::time::Duration::from_secs(2), notify.notified())
+            .await
+            .expect("shutdown notify must fire once burned and in_flight <= 1");
+
+        clear_mock(_mock_guard);
+    }
+
+    // ── (h3) non-protected host walls never latch ─────────────────────────
+    //
+    // 10 walls for a non-listed host → /ready stays 200, notify never fires.
+    #[tokio::test]
+    async fn h3_non_protected_host_walls_stay_ready() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let state = make_state(tapology_config(30), Arc::clone(&notify)).await;
+        let router = build_router(state, false);
+
+        let _mock_guard = set_mock(wall_challenge_mock()).await;
+
+        for i in 0..10u32 {
+            post_wall(&router, i + 1, &format!("https://example.com/page{i}")).await;
+        }
+
+        let (s, body) = get_ready(&router).await;
+        assert_eq!(s, StatusCode::OK, "non-protected host must not burn");
+        assert_eq!(body["status"], "ready");
+
+        let fired =
+            tokio::time::timeout(std::time::Duration::from_millis(100), notify.notified()).await;
+        assert!(
+            fired.is_err(),
+            "notify must not fire for non-protected host"
+        );
+
+        clear_mock(_mock_guard);
+    }
+
+    // ── (h4) drain correctness via the real drain_and_shutdown ────────────
+    //
+    // With in_flight=3, shutdown does NOT fire until in_flight drops to <= 1.
+    // If in_flight never drops, shutdown fires once grace_secs elapses.
+    // Uses tokio::time::pause() so the 1s-grace case doesn't need real wall time.
+    #[tokio::test]
+    async fn h4_drain_correctness() {
+        // Case 1: drain waits for in_flight to drop
+        {
+            let in_flight = Arc::new(AtomicI64::new(3));
+            let in_flight2 = Arc::clone(&in_flight);
+            let guard = make_drain_guard_with_grace(5);
+            let notify = guard.shutdown_notifier();
+
+            tokio::spawn(drain_and_shutdown(
+                Arc::clone(&in_flight),
+                Arc::clone(&guard),
+            ));
+
+            // Yield so the drain task has a chance to start but not fire
+            tokio::task::yield_now().await;
+
+            let early =
+                tokio::time::timeout(std::time::Duration::from_millis(50), notify.notified()).await;
+            assert!(early.is_err(), "drain must not fire while in_flight > 1");
+
+            // Drop in_flight to 1 and yield for drain to observe
+            in_flight2.fetch_sub(2, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::timeout(std::time::Duration::from_secs(2), notify.notified())
+                .await
+                .expect("drain must fire once in_flight drops to <= 1");
+        }
+
+        // Case 2: grace deadline fires when in_flight never drops
+        // Uses paused time so 1s-grace doesn't require real waiting.
+        {
+            tokio::time::pause();
+            let in_flight = Arc::new(AtomicI64::new(5));
+            let guard = make_drain_guard_with_grace(1); // 1s grace
+            let notify = guard.shutdown_notifier();
+
+            tokio::spawn(drain_and_shutdown(
+                Arc::clone(&in_flight),
+                Arc::clone(&guard),
+            ));
+
+            // Yield to let drain task register its timers, then advance past grace
+            tokio::task::yield_now().await;
+            tokio::time::advance(std::time::Duration::from_secs(2)).await;
+            // Yield again so the task can observe expired timer
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+
+            tokio::time::timeout(std::time::Duration::from_millis(100), notify.notified())
+                .await
+                .expect("drain must fire after grace elapses even if in_flight stays high");
+
+            tokio::time::resume();
+        }
+    }
+
+    // Helper reused across drain tests (also shared with outer test mod via super)
+    fn make_drain_guard_with_grace(grace_secs: u64) -> Arc<WallGuard> {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let config = crate::mcp::wall_guard::WallGuardConfig {
+            evict_after_walls: Some(1),
+            evict_hosts: ["tapology.com"].iter().map(|s| s.to_string()).collect(),
+            evict_grace_secs: grace_secs,
+            evict_min_uptime_secs: 0,
+        };
+        WallGuard::new(config, notify)
+    }
+
+    // ── (h5) end-to-end graceful exit ─────────────────────────────────────
+    //
+    // Run axum::serve on an ephemeral port with the real router, trigger
+    // eviction over HTTP, and assert the serve future completes.
+    //
+    // Seam note: a tool dispatch that sleeps (to test in-flight draining)
+    // is not feasible without a second seam (the mock returns immediately).
+    // We therefore test the graceful-exit path: trigger burn, assert serve
+    // completes, and assert a subsequent /health returns something (verifying
+    // the server was actually up).  The drain test (h4) covers in-flight
+    // waiting; h5 covers the server lifecycle.
+    #[tokio::test]
+    async fn h5_graceful_exit_via_real_server() {
+        use tokio::net::TcpListener;
+
+        // Bind first to get the actual port, then create state with that port
+        // so Bound's host-check passes (it rejects requests for wrong ports).
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
+
+        let notify_guard = Arc::new(tokio::sync::Notify::new());
+        let notify_shutdown = Arc::clone(&notify_guard);
+        let state = make_state_on_port(tapology_config(1), Arc::clone(&notify_guard), port).await;
+        let router = build_router(state, false);
+
+        let serve_fut = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    notify_shutdown.notified().await;
+                })
+                .await
+                .unwrap();
+        });
+
+        // Give server a moment to bind
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Use a client with connection pool disabled so connections close
+        // after each response — axum graceful shutdown waits for open
+        // connections to drain, and a pooled client would keep them alive.
+        let client = reqwest::Client::builder()
+            .connection_verbose(false)
+            .pool_max_idle_per_host(0)
+            .build()
+            .unwrap();
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{port}/health"))
+            .header("connection", "close")
+            .send()
+            .await
+            .expect("health check before burn");
+        // Consume the body so the connection is fully done before asserting
+        let status = resp.status();
+        let _ = resp.bytes().await;
+        assert_eq!(status, 200u16, "/health must be 200 before burn");
+
+        // Trigger eviction: 3 wall responses
+        let _mock_guard = set_mock(wall_challenge_mock()).await;
+        for (i, url) in [
+            "https://tapology.com/p1",
+            "https://tapology.com/p2",
+            "https://tapology.com/p3",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let body = web_fetch_request((i + 1) as u32, url);
+            let r = client
+                .post(format!("http://127.0.0.1:{port}/mcp"))
+                .header("content-type", "application/json")
+                .header("connection", "close")
+                .body(body)
+                .send()
+                .await
+                .expect("POST /mcp for wall");
+            // Consume response body so connection is released
+            let _ = r.bytes().await;
+        }
+        // Drop the client entirely to close all connections before asserting shutdown
+        drop(client);
+        clear_mock(_mock_guard);
+
+        // The graceful-shutdown signal is the notify_guard itself.
+        // drain_and_shutdown calls notify_one(), which is consumed by
+        // axum::serve's graceful shutdown future (which also awaits it).
+        // So we verify the SERVE FUTURE completes as the end-to-end proof:
+        // serve completes ↔ notify fired ↔ drain ran ↔ burn triggered.
+
+        // Give drain_and_shutdown time to run (it was spawned inside the serve task).
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // serve_fut must complete within a generous timeout once drain fires
+        tokio::time::timeout(std::time::Duration::from_secs(10), serve_fut)
+            .await
+            .expect("serve must complete after burn - serve future must resolve after graceful shutdown")
+            .expect("serve task must not panic");
+    }
+
+    // ── (h6) feature OFF: 20 walls → /ready stays 200 ────────────────────
+    #[tokio::test]
+    async fn h6_feature_off_walls_do_not_burn() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        // Disabled config: evict_after_walls = None
+        let disabled_config = crate::mcp::wall_guard::WallGuardConfig {
+            evict_after_walls: None,
+            evict_hosts: std::collections::HashSet::new(),
+            evict_grace_secs: 30,
+            evict_min_uptime_secs: 0,
+        };
+        let state = make_state(disabled_config, Arc::clone(&notify)).await;
+        let router = build_router(state, false);
+
+        let _mock_guard = set_mock(wall_challenge_mock()).await;
+        for i in 0..20u32 {
+            post_wall(&router, i + 1, &format!("https://tapology.com/page{i}")).await;
+        }
+        clear_mock(_mock_guard);
+
+        let (s, body) = get_ready(&router).await;
+        assert_eq!(
+            s,
+            StatusCode::OK,
+            "/ready must stay 200 when feature is off"
+        );
+        assert_eq!(body["status"], "ready");
+
+        let fired =
+            tokio::time::timeout(std::time::Duration::from_millis(100), notify.notified()).await;
+        assert!(fired.is_err(), "notify must not fire when feature is off");
     }
 }
